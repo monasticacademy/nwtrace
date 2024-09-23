@@ -8,11 +8,13 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/alexflint/go-arg"
-	"github.com/kr/pretty"
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 	"gvisor.dev/gvisor/pkg/rawfile"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/link/fdbased"
@@ -94,25 +96,36 @@ func Main() error {
 	}
 	arg.MustParse(&args)
 
-	// Parse the mac address.
+	// lock the OS thread in order to switch network namespaces
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	// save a reference to our initial network namespace so we can get back
+	origns, err := netns.Get()
+	if err != nil {
+		return fmt.Errorf("error getting initial network namespace: %w", err)
+	}
+	defer origns.Close()
+
+	// parse the mac address
 	maddr, err := net.ParseMAC(*mac)
 	if err != nil {
 		log.Fatalf("Bad MAC address: %v", *mac)
 	}
 
-	// Parse the IP address. Support both ipv4 and ipv6.
-	parsedAddr := net.ParseIP(args.Address)
-	if parsedAddr == nil {
+	// parse our IP address
+	localAddr := net.ParseIP(args.Address)
+	if localAddr == nil {
 		log.Fatalf("Bad IP address: %v", args.Address)
 	}
 
 	var addrWithPrefix tcpip.AddressWithPrefix
 	var proto tcpip.NetworkProtocolNumber
-	if parsedAddr.To4() != nil {
-		addrWithPrefix = tcpip.AddrFromSlice(parsedAddr.To4()).WithPrefix()
+	if localAddr.To4() != nil {
+		addrWithPrefix = tcpip.AddrFromSlice(localAddr.To4()).WithPrefix()
 		proto = ipv4.ProtocolNumber
-	} else if parsedAddr.To16() != nil {
-		addrWithPrefix = tcpip.AddrFromSlice(parsedAddr.To16()).WithPrefix()
+	} else if localAddr.To16() != nil {
+		addrWithPrefix = tcpip.AddrFromSlice(localAddr.To16()).WithPrefix()
 		proto = ipv6.ProtocolNumber
 	} else {
 		log.Fatalf("Unknown IP type: %v", args.Address)
@@ -125,7 +138,14 @@ func Main() error {
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol},
 	})
 
-	// create a new tun device
+	// Create a new network namespace
+	newns, err := netns.New()
+	if err != nil {
+		return fmt.Errorf("error creating network namespace: %w", err)
+	}
+	defer newns.Close()
+
+	// create a new tun device in the new namespace
 	fd, err := tun.Open(args.Tun)
 	if err != nil {
 		return fmt.Errorf("error creating tun device: %w", err)
@@ -144,19 +164,61 @@ func Main() error {
 	}
 
 	// assign a local address and subnet to the link
-	linksubnet, err := netlink.ParseIPNet("10.1.2.3/24")
+	linksubnet, err := netlink.ParseIPNet("10.1.2.255/24")
 	if err != nil {
 		return fmt.Errorf("error parsing subnet: %w", err)
 	}
 
-	pretty.Println("parsed subnet:", linksubnet)
-
+	// assign the address we just parsed to the link, which will change the routing table
 	err = netlink.AddrAdd(link, &netlink.Addr{
 		IPNet: linksubnet,
 	})
 	if err != nil {
 		return fmt.Errorf("error assign address to tun device: %w", err)
 	}
+
+	// parse the global subnet 0.0.0.0/0
+	globalsubnet, err := netlink.ParseIPNet("0.0.0.0/0")
+	if err != nil {
+		return fmt.Errorf("error parsing global subnet: %w", err)
+	}
+
+	// add a route that sends all traffic going anywhere to our local address
+	err = netlink.RouteAdd(&netlink.Route{
+		Dst: globalsubnet,
+		Gw:  localAddr,
+	})
+	if err != nil {
+		return fmt.Errorf("error creating default route: %w", err)
+	}
+
+	// launch a subprocess in the namespace
+	cmd := exec.Command("/bin/sh")
+
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	cmd.Env = []string{"PS1=CONTAINER # "}
+
+	// no need for CLONE_NEWNET here because we already switched into the new namespace
+	// cmd.SysProcAttr = &syscall.SysProcAttr{
+	// 	Cloneflags: syscall.CLONE_NEWNET,
+	// }
+
+	err = cmd.Start()
+	if err != nil {
+		return fmt.Errorf("error starting subprocess: %w", err)
+	}
+
+	go func() {
+		_ = cmd.Wait()
+		exitCode := cmd.ProcessState.ExitCode()
+		log.Printf("subprocess exited with code %d, shutting down httptap", exitCode)
+		os.Exit(exitCode)
+	}()
+
+	//
 
 	// set up software network stack
 	mtu, err := rawfile.GetMTU(args.Tun)

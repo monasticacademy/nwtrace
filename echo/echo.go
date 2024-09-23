@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
+	"os"
 	"strings"
 
 	"github.com/alexflint/go-arg"
+	"github.com/kr/pretty"
+	"github.com/vishvananda/netlink"
 	"gvisor.dev/gvisor/pkg/rawfile"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/link/fdbased"
@@ -82,7 +86,7 @@ func echo(wq *waiter.Queue, ep tcpip.Endpoint) {
 	}
 }
 
-func main() {
+func Main() error {
 	var args struct {
 		Tun     string
 		Address string
@@ -124,9 +128,37 @@ func main() {
 	// create a new tun device
 	fd, err := tun.Open(args.Tun)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error creating tun device: %w", err)
 	}
 
+	// find the link for it
+	link, err := netlink.LinkByName(args.Tun)
+	if err != nil {
+		return fmt.Errorf("error finding link for new tun device %q: %w", args.Tun, err)
+	}
+
+	// bring the link up
+	err = netlink.LinkSetUp(link)
+	if err != nil {
+		return fmt.Errorf("error bringing up link for %q: %w", args.Tun, err)
+	}
+
+	// assign a local address and subnet to the link
+	linksubnet, err := netlink.ParseIPNet("10.1.2.3/24")
+	if err != nil {
+		return fmt.Errorf("error parsing subnet: %w", err)
+	}
+
+	pretty.Println("parsed subnet:", linksubnet)
+
+	err = netlink.AddrAdd(link, &netlink.Addr{
+		IPNet: linksubnet,
+	})
+	if err != nil {
+		return fmt.Errorf("error assign address to tun device: %w", err)
+	}
+
+	// set up software network stack
 	mtu, err := rawfile.GetMTU(args.Tun)
 	if err != nil {
 		log.Fatal(err)
@@ -203,5 +235,14 @@ func main() {
 		log.Println("accepted a connection...")
 
 		go echo(wq, n) // S/R-SAFE: sample code.
+	}
+}
+
+func main() {
+	log.SetOutput(os.Stdout)
+	log.SetFlags(0)
+	err := Main()
+	if err != nil {
+		log.Fatal(err)
 	}
 }

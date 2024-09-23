@@ -1,4 +1,4 @@
-DEVICE := httptap2
+DEVICE := httptap
 ADDRESS := 10.1.2.4
 PORT := 19870
 SUBNET := 10.1.2.255/24

@@ -19,7 +19,7 @@ import (
 func Main() error {
 	var args struct {
 		Tun     string   `default:"httptap"`
-		Link    string   `default:"10.1.1.255/24"`
+		Link    string   `default:"10.1.1.100/24"`
 		Route   string   `default:"0.0.0.0/0"`
 		Gateway string   `default:"10.1.1.1"`
 		Command []string `arg:"positional"`
@@ -132,7 +132,6 @@ func Main() error {
 				continue
 			}
 
-			log.Printf("read a packet of size %d", n)
 			packet := gopacket.NewPacket(buf[:n], layers.LayerTypeIPv4, gopacket.Default)
 			ipv4, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4)
 			if !ok {
@@ -145,7 +144,61 @@ func Main() error {
 			}
 
 			if tcp.SYN {
-				log.Printf("syn to %v:%v", ipv4.DstIP, tcp.DstPort)
+				log.Printf("syn to %v:%v:", ipv4.DstIP, tcp.DstPort)
+				log.Println(packet.Dump())
+
+				opts := gopacket.SerializeOptions{
+					FixLengths:       true,
+					ComputeChecksums: true,
+				}
+
+				buf := gopacket.NewSerializeBuffer()
+
+				// each layer is *prepended*, treating the current buffer data is payload
+				replytcp := layers.TCP{
+					SrcPort: tcp.DstPort,
+					DstPort: tcp.SrcPort,
+					ACK:     true,
+				}
+
+				replyipv4 := layers.IPv4{
+					Version:  ipv4.Version,
+					TTL:      9,
+					Protocol: layers.IPProtocolTCP,
+					SrcIP:    ipv4.DstIP,
+					DstIP:    ipv4.SrcIP,
+				}
+
+				replytcp.SetNetworkLayerForChecksum(&replyipv4)
+
+				err := replytcp.SerializeTo(buf, opts)
+				if err != nil {
+					log.Printf("error serializing reply TCP: %v, abandoning reply...", err)
+					continue
+				}
+
+				err = replyipv4.SerializeTo(buf, opts)
+				if err != nil {
+					log.Printf("error serializing reply TCP: %v, abandoning reply...", err)
+					continue
+				}
+
+				// write the packet back to the tun device
+				nb, err := tun.Write(buf.Bytes())
+				if err != nil {
+					log.Printf("error sending reply TCP to device: %v, abandoning reply...", err)
+					continue
+				}
+
+				if nb < len(buf.Bytes()) {
+					log.Printf("tried to send packet of length %v but only %v bytes were sent, abandoning...", len(buf.Bytes()), nb)
+					continue
+				}
+
+				log.Printf("replied to SYN with ACK from %v:%v:", replyipv4.SrcIP, replytcp.SrcPort)
+
+				reply := gopacket.NewPacket(buf.Bytes(), layers.LayerTypeIPv4, gopacket.Default)
+				log.Println(reply.Dump())
 			}
 		}
 	}()

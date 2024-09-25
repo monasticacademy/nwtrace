@@ -17,6 +17,7 @@ import (
 	"github.com/vishvananda/netns"
 	"gvisor.dev/gvisor/pkg/rawfile"
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/fdbased"
 	"gvisor.dev/gvisor/pkg/tcpip/link/tun"
 	"gvisor.dev/gvisor/pkg/tcpip/network/arp"
@@ -247,12 +248,15 @@ func Main() error {
 		log.Fatalf("AddProtocolAddress(%d, %+v, {}): %s", 1, protocolAddr, err)
 	}
 
-	subnet, err := tcpip.NewSubnet(tcpip.AddrFromSlice([]byte(strings.Repeat("\x00", addrWithPrefix.Address.Len()))), tcpip.MaskFrom(strings.Repeat("\x00", addrWithPrefix.Address.Len())))
+	global := strings.Repeat("\x00", addrWithPrefix.Address.Len())
+	subnet, err := tcpip.NewSubnet(
+		tcpip.AddrFromSlice([]byte(global)),
+		tcpip.MaskFrom(global))
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Add default route.
+	// set up a route table that routes everything to us
 	s.SetRouteTable([]tcpip.Route{
 		{
 			Destination: subnet,
@@ -260,13 +264,14 @@ func Main() error {
 		},
 	})
 
-	// Create TCP endpoint, bind it, then start listening.
 	var wq waiter.Queue
-	ep, e := s.NewEndpoint(tcp.ProtocolNumber, proto, &wq)
-	if e != nil {
-		log.Fatal(e)
-	}
 
+	// create TCP endpoint, bind it, then start listening
+	//ep, e := s.NewEndpoint(tcp.ProtocolNumber, proto, &wq)
+	ep, e := s.NewRawEndpoint(tcp.ProtocolNumber, header.IPv4ProtocolNumber, &wq, true)
+	if e != nil {
+		return fmt.Errorf("error creating a raw endpoint: %w", err)
+	}
 	defer ep.Close()
 
 	if err := ep.Bind(tcpip.FullAddress{Port: args.Port}); err != nil {

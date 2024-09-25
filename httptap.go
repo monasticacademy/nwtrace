@@ -9,6 +9,8 @@ import (
 	"runtime"
 
 	"github.com/alexflint/go-arg"
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -108,7 +110,7 @@ func Main() error {
 
 	// launch a subprocess -- we are already in the namespace so nothing special here
 	cmd := exec.Command(args.Command[0])
-	cmd.Args = args.Command[1:]
+	cmd.Args = args.Command
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -126,10 +128,25 @@ func Main() error {
 		for {
 			n, err := tun.Read(buf)
 			if err != nil {
-				log.Fatal(err)
+				log.Printf("error reading a packet from tun: %v, ignoring", err)
+				continue
 			}
-			buf := buf[:n]
-			log.Printf("read a packet of size %d", len(buf))
+
+			log.Printf("read a packet of size %d", n)
+			packet := gopacket.NewPacket(buf[:n], layers.LayerTypeIPv4, gopacket.Default)
+			ipv4, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4)
+			if !ok {
+				continue
+			}
+
+			tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP)
+			if !ok {
+				continue
+			}
+
+			if tcp.SYN {
+				log.Printf("syn to %v:%v", ipv4.DstIP, tcp.DstPort)
+			}
 		}
 	}()
 

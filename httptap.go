@@ -148,7 +148,6 @@ func copyToDevice(ctx context.Context, dst *water.Interface, src chan []byte) er
 				log.Println(reply.Dump())
 			} else {
 				log.Printf("transmitting %v raw bytes to subprocess", len(packet))
-				log.Println(string(packet))
 			}
 		}
 	}
@@ -217,6 +216,10 @@ func oneline(packet gopacket.Packet) string {
 		return fmt.Sprintf("<not a TCP packet (has %v)>", layernames(packet))
 	}
 
+	return onelineTCP(ipv4, tcp, tcp.Payload)
+}
+
+func onelineTCP(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte) string {
 	var flags []string
 	if tcp.FIN {
 		flags = append(flags, "FIN")
@@ -242,11 +245,11 @@ func oneline(packet gopacket.Packet) string {
 	if tcp.NS {
 		flags = append(flags, "NS")
 	}
-
 	// ignore PSH flag
 
 	flagstr := strings.Join(flags, "+")
-	return fmt.Sprintf("%v:%d => %v:%d %s - Ack %d - Len %d", ipv4.SrcIP, tcp.SrcPort, ipv4.DstIP, tcp.DstPort, flagstr, tcp.Ack, len(tcp.Payload))
+	return fmt.Sprintf("%v:%d => %v:%d %s - Seq %d - Ack %d - Len %d",
+		ipv4.SrcIP, tcp.SrcPort, ipv4.DstIP, tcp.DstPort, flagstr, tcp.Seq, tcp.Ack, len(tcp.Payload))
 }
 
 func Main() error {
@@ -429,6 +432,9 @@ func Main() error {
 
 					replytcp.SetNetworkLayerForChecksum(&replyipv4)
 
+					// log
+					log.Printf("sending to subprocess (payload): %s", onelineTCP(&replyipv4, &replytcp, payload))
+
 					// serialize the data
 					packet, err := serializeTCP(&replyipv4, &replytcp, payload, stream.serializeBuf)
 					if err != nil {
@@ -454,6 +460,7 @@ func Main() error {
 			// handle connection establishment
 			if tcp.SYN && stream.state == StateInit {
 				stream.state = StateSynchronizing
+				seq := atomic.AddUint32(&stream.seq, 1) - 1
 				atomic.StoreUint32(&stream.ack, tcp.Seq+1)
 				log.Printf("got SYN to %v:%v, now state is %v", ipv4.DstIP, tcp.DstPort, stream.state)
 
@@ -466,7 +473,7 @@ func Main() error {
 					DstPort: tcp.SrcPort,
 					SYN:     true,
 					ACK:     true,
-					Seq:     stream.seq,
+					Seq:     seq,
 					Ack:     tcp.Seq + 1,
 					Window:  64240, // number of bytes we are willing to receive (copied from sender)
 				}
@@ -480,6 +487,9 @@ func Main() error {
 				}
 
 				replytcp.SetNetworkLayerForChecksum(&replyipv4)
+
+				// log
+				log.Printf("sending to subprocess (synack): %s", onelineTCP(&replyipv4, &replytcp, nil))
 
 				// serialize the packet
 				serialized, err := serializeTCP(&replyipv4, &replytcp, nil, stream.serializeBuf)
@@ -498,12 +508,6 @@ func Main() error {
 				default:
 					log.Printf("channel for sending to subprocess would have blocked, dropping %d bytes", len(cp))
 				}
-
-				// having sent a synack, we must increment our sequence number by 1
-				atomic.AddUint32(&stream.seq, 1)
-
-				// log the result
-				log.Printf("replying to SYN with SYNACK from %v:%v", replyipv4.SrcIP, replytcp.SrcPort)
 			}
 
 			if tcp.ACK && stream.state == StateSynchronizing {

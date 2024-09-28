@@ -44,19 +44,23 @@ const (
 )
 
 type stream struct {
+	protocol       string // can be "tcp" or "udp"
 	world          AddrPort
 	fromSubprocess chan []byte  // from the subprocess to the world
 	toSubprocess   func([]byte) // in means from the world to the subprocess
 
-	state        TCPState
-	seq          uint32 // sequence number for packets going to the subprocess
-	ack          uint32 // the next acknowledgement number to send
 	subprocess   AddrPort
 	serializeBuf gopacket.SerializeBuffer
+
+	// tcp-specific things (TODO: factor out)
+	state TCPState
+	seq   uint32 // sequence number for packets going to the subprocess
+	ack   uint32 // the next acknowledgement number to send
 }
 
-func newStream(world AddrPort, subprocess AddrPort) *stream {
+func newStream(protool string, world AddrPort, subprocess AddrPort) *stream {
 	stream := stream{
+		protocol:       protool,
 		world:          world,
 		subprocess:     subprocess,
 		state:          StateInit,
@@ -83,7 +87,7 @@ func (s *stream) sendToWorld(payload []byte) {
 }
 
 func (s *stream) dial() {
-	conn, err := net.Dial("tcp", s.world.String())
+	conn, err := net.Dial(s.protocol, s.world.String())
 	if err != nil {
 		log.Printf("service loop exited with error: %v", err)
 		return
@@ -182,6 +186,35 @@ func serializeTCP(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte, tmp gopack
 	return tmp.Bytes(), nil
 }
 
+// serializeUDP serializes a UDP packet
+func serializeUDP(ipv4 *layers.IPv4, udp *layers.UDP, payload []byte, tmp gopacket.SerializeBuffer) ([]byte, error) {
+	opts := gopacket.SerializeOptions{
+		FixLengths:       true,
+		ComputeChecksums: true,
+	}
+
+	tmp.Clear()
+
+	// each layer is *prepended*, treating the current buffer data as payload
+	p, err := tmp.AppendBytes(len(payload))
+	if err != nil {
+		return nil, fmt.Errorf("error appending TCP payload to packet (%d bytes): %w", len(payload), err)
+	}
+	copy(p, payload)
+
+	err = udp.SerializeTo(tmp, opts)
+	if err != nil {
+		return nil, fmt.Errorf("error serializing TCP part of packet: %w", err)
+	}
+
+	err = ipv4.SerializeTo(tmp, opts)
+	if err != nil {
+		log.Printf("error serializing IP part of packet: %v", err)
+	}
+
+	return tmp.Bytes(), nil
+}
+
 // preview returns the first 100 bytes or first line of its input, whichever is shorter
 func preview(b []byte) string {
 	s := string(b)
@@ -248,9 +281,16 @@ func onelineTCP(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte) string {
 	// ignore PSH flag
 
 	flagstr := strings.Join(flags, "+")
-	return fmt.Sprintf("%v:%d => %v:%d %s - Seq %d - Ack %d - Len %d",
+	return fmt.Sprintf("TCP %v:%d => %v:%d %s - Seq %d - Ack %d - Len %d",
 		ipv4.SrcIP, tcp.SrcPort, ipv4.DstIP, tcp.DstPort, flagstr, tcp.Seq, tcp.Ack, len(tcp.Payload))
 }
+
+func onelineUDP(ipv4 *layers.IPv4, udp *layers.UDP, payload []byte) string {
+	return fmt.Sprintf("UDP %v:%d => %v:%d - Len %d",
+		ipv4.SrcIP, udp.SrcPort, ipv4.DstIP, udp.DstPort, len(udp.Payload))
+}
+
+// TCP stack
 
 type tcpStack struct {
 	streamsBySrcDst map[string]*stream
@@ -276,7 +316,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 	if !found {
 		// create a new stream no matter what kind of packet this is
 		// later we will reject everything other than SYN packets sent to a fresh stream
-		stream = newStream(dst, src)
+		stream = newStream("tcp", dst, src)
 
 		// define the function that wraps payloads in TCP and IP headers
 		stream.toSubprocess = func(payload []byte) {
@@ -302,7 +342,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 			replytcp.SetNetworkLayerForChecksum(&replyipv4)
 
 			// log
-			log.Printf("sending to subprocess (payload): %s", onelineTCP(&replyipv4, &replytcp, payload))
+			log.Printf("sending tcp to subprocess (payload): %s", onelineTCP(&replyipv4, &replytcp, payload))
 
 			// serialize the data
 			packet, err := serializeTCP(&replyipv4, &replytcp, payload, stream.serializeBuf)
@@ -319,7 +359,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 			select {
 			case s.toSubprocess <- cp:
 			default:
-				log.Printf("channel for sending to subprocess would have blocked, dropping %d bytes", len(cp))
+				log.Printf("channel for sending tcp to subprocess would have blocked, dropping %d bytes", len(cp))
 			}
 		}
 
@@ -358,7 +398,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		replytcp.SetNetworkLayerForChecksum(&replyipv4)
 
 		// log
-		log.Printf("sending to subprocess (synack): %s", onelineTCP(&replyipv4, &replytcp, nil))
+		log.Printf("sending tcp to subprocess (synack): %s", onelineTCP(&replyipv4, &replytcp, nil))
 
 		// serialize the packet
 		serialized, err := serializeTCP(&replyipv4, &replytcp, nil, stream.serializeBuf)
@@ -389,7 +429,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 
 	// payload packets will often have ACK set, which acknowledges previously sent bytes
 	if !tcp.SYN && len(tcp.Payload) > 0 && stream.state == StateConnected {
-		log.Printf("got %d bytes to %v:%v (%q), forwarding to world", len(tcp.Payload), ipv4.DstIP, tcp.DstPort, preview(tcp.Payload))
+		log.Printf("got %d tcp bytes to %v:%v (%q), forwarding to world", len(tcp.Payload), ipv4.DstIP, tcp.DstPort, preview(tcp.Payload))
 
 		// update sequence number
 		atomic.StoreUint32(&stream.ack, tcp.Seq+uint32(len(tcp.Payload)))
@@ -397,6 +437,83 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		// forward the data to the world
 		stream.sendToWorld(tcp.Payload)
 	}
+}
+
+// UDP stack
+
+type udpStack struct {
+	streamsBySrcDst map[string]*stream
+	toSubprocess    chan []byte // data sent to this channel goes to subprocess as raw IPv4 packet
+}
+
+func newUDPStack(toSubprocess chan []byte) *udpStack {
+	return &udpStack{
+		streamsBySrcDst: make(map[string]*stream),
+		toSubprocess:    toSubprocess,
+	}
+}
+
+func (s *udpStack) handlePacket(ipv4 *layers.IPv4, udp *layers.UDP, payload []byte) {
+	// it happens that a process will connect to the same remote service multiple times in from
+	// different source ports so we must key by a descriptor that includes both endpoints
+	dst := AddrPort{Addr: ipv4.DstIP, Port: uint16(udp.DstPort)}
+	src := AddrPort{Addr: ipv4.SrcIP, Port: uint16(udp.SrcPort)}
+
+	// put source address, source port, destination address, and destination port into a human-readable string
+	srcdst := src.String() + " => " + dst.String()
+	stream, found := s.streamsBySrcDst[srcdst]
+	if !found {
+		// create a new stream no matter what kind of packet this is
+		// later we will reject everything other than SYN packets sent to a fresh stream
+		stream = newStream("udp", dst, src)
+
+		// define the function that wraps payloads in TCP and IP headers
+		stream.toSubprocess = func(payload []byte) {
+			replyudp := layers.UDP{
+				SrcPort: udp.DstPort,
+				DstPort: udp.SrcPort,
+			}
+
+			replyipv4 := layers.IPv4{
+				Version:  4, // indicates IPv4
+				TTL:      ttl,
+				Protocol: layers.IPProtocolUDP,
+				SrcIP:    ipv4.DstIP,
+				DstIP:    ipv4.SrcIP,
+			}
+
+			replyudp.SetNetworkLayerForChecksum(&replyipv4)
+
+			// log
+			log.Printf("sending udp to subprocess (payload): %s", onelineUDP(&replyipv4, &replyudp, payload))
+
+			// serialize the data
+			packet, err := serializeUDP(&replyipv4, &replyudp, payload, stream.serializeBuf)
+			if err != nil {
+				log.Printf("error serializing UDP packet: %v, ignoring", err)
+				return
+			}
+
+			// make a copy because the same buffer will be re-used
+			cp := make([]byte, len(packet))
+			copy(cp, packet)
+
+			// send to the subprocess channel non-blocking
+			select {
+			case s.toSubprocess <- cp:
+			default:
+				log.Printf("channel for sending udp to subprocess would have blocked, dropping %d bytes", len(cp))
+			}
+		}
+
+		go stream.dial()
+
+		s.streamsBySrcDst[srcdst] = stream
+	}
+
+	// forward the data to the world
+	log.Printf("got %d udp bytes to %v:%v (%q), forwarding to world", len(udp.Payload), ipv4.DstIP, udp.DstPort, preview(udp.Payload))
+	stream.sendToWorld(udp.Payload)
 }
 
 func Main() error {
@@ -514,6 +631,7 @@ func Main() error {
 	go func() {
 		// all our tcp streams, keyed by source address, source port, destination address, and destination port
 		tcpstack := newTCPStack(toSubprocess)
+		udpstack := newUDPStack(toSubprocess)
 
 		buf := make([]byte, 1500)
 		for {
@@ -529,8 +647,9 @@ func Main() error {
 				continue
 			}
 
-			tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP)
-			if !ok {
+			tcp, isTCP := packet.Layer(layers.LayerTypeTCP).(*layers.TCP)
+			udp, isUDP := packet.Layer(layers.LayerTypeUDP).(*layers.UDP)
+			if !isTCP && !isUDP {
 				continue
 			}
 
@@ -543,7 +662,12 @@ func Main() error {
 				log.Printf("received from subprocess: %v", oneline(packet))
 			}
 
-			tcpstack.handlePacket(ipv4, tcp, tcp.Payload)
+			if isTCP {
+				tcpstack.handlePacket(ipv4, tcp, tcp.Payload)
+			}
+			if isUDP {
+				udpstack.handlePacket(ipv4, udp, udp.Payload)
+			}
 		}
 	}()
 

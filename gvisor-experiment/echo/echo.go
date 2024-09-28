@@ -17,7 +17,6 @@ import (
 	"github.com/vishvananda/netns"
 	"gvisor.dev/gvisor/pkg/rawfile"
 	"gvisor.dev/gvisor/pkg/tcpip"
-	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/fdbased"
 	"gvisor.dev/gvisor/pkg/tcpip/link/tun"
 	"gvisor.dev/gvisor/pkg/tcpip/network/arp"
@@ -267,8 +266,8 @@ func Main() error {
 	var wq waiter.Queue
 
 	// create TCP endpoint, bind it, then start listening
-	//ep, e := s.NewEndpoint(tcp.ProtocolNumber, proto, &wq)
-	ep, e := s.NewRawEndpoint(tcp.ProtocolNumber, header.IPv4ProtocolNumber, &wq, true)
+	ep, e := s.NewEndpoint(tcp.ProtocolNumber, proto, &wq)
+	//ep, e := s.NewRawEndpoint(tcp.ProtocolNumber, header.IPv4ProtocolNumber, &wq, true)
 	if e != nil {
 		return fmt.Errorf("error creating a raw endpoint: %w", err)
 	}

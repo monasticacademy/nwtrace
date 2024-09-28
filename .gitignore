@@ -5,3 +5,4 @@
 **/secrets/*
 !**/secrets/*.encrypted
 !**/secrets/*.go
+/out

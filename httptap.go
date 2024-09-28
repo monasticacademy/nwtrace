@@ -43,7 +43,7 @@ const (
 	StateFinished
 )
 
-type Stream struct {
+type stream struct {
 	world          AddrPort
 	fromSubprocess chan []byte  // from the subprocess to the world
 	toSubprocess   func([]byte) // in means from the world to the subprocess
@@ -55,8 +55,8 @@ type Stream struct {
 	serializeBuf gopacket.SerializeBuffer
 }
 
-func newStream(world AddrPort, subprocess AddrPort) *Stream {
-	stream := Stream{
+func newStream(world AddrPort, subprocess AddrPort) *stream {
+	stream := stream{
 		world:          world,
 		subprocess:     subprocess,
 		state:          StateInit,
@@ -67,7 +67,7 @@ func newStream(world AddrPort, subprocess AddrPort) *Stream {
 	return &stream
 }
 
-func (s *Stream) sendToWorld(payload []byte) {
+func (s *stream) sendToWorld(payload []byte) {
 	// copy the payload because it may be overwritten before the write loop gets to it
 	cp := make([]byte, len(payload))
 	copy(cp, payload)
@@ -82,7 +82,7 @@ func (s *Stream) sendToWorld(payload []byte) {
 	}
 }
 
-func (s *Stream) dial() {
+func (s *stream) dial() {
 	conn, err := net.Dial("tcp", s.world.String())
 	if err != nil {
 		log.Printf("service loop exited with error: %v", err)
@@ -93,7 +93,7 @@ func (s *Stream) dial() {
 	go s.copyToWorld(conn, s.fromSubprocess)
 }
 
-func (s *Stream) copyToSubprocess(toSubprocess func([]byte), fromWorld net.Conn) {
+func (s *stream) copyToSubprocess(toSubprocess func([]byte), fromWorld net.Conn) {
 	buf := make([]byte, 1<<20)
 	for {
 		n, err := fromWorld.Read(buf)
@@ -115,7 +115,7 @@ func (s *Stream) copyToSubprocess(toSubprocess func([]byte), fromWorld net.Conn)
 	}
 }
 
-func (s *Stream) copyToWorld(toWorld net.Conn, fromSubprocess chan []byte) {
+func (s *stream) copyToWorld(toWorld net.Conn, fromSubprocess chan []byte) {
 	for packet := range fromSubprocess {
 		log.Printf("stream writing %d bytes (%q) to world connection", len(packet), preview(packet))
 		_, err := toWorld.Write(packet)
@@ -252,6 +252,153 @@ func onelineTCP(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte) string {
 		ipv4.SrcIP, tcp.SrcPort, ipv4.DstIP, tcp.DstPort, flagstr, tcp.Seq, tcp.Ack, len(tcp.Payload))
 }
 
+type tcpStack struct {
+	streamsBySrcDst map[string]*stream
+	toSubprocess    chan []byte // data sent to this channel goes to subprocess as raw IPv4 packet
+}
+
+func newTCPStack(toSubprocess chan []byte) *tcpStack {
+	return &tcpStack{
+		streamsBySrcDst: make(map[string]*stream),
+		toSubprocess:    toSubprocess,
+	}
+}
+
+func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte) {
+	// it happens that a process will connect to the same remote service multiple times in from
+	// different source ports so we must key by a descriptor that includes both endpoints
+	dst := AddrPort{Addr: ipv4.DstIP, Port: uint16(tcp.DstPort)}
+	src := AddrPort{Addr: ipv4.SrcIP, Port: uint16(tcp.SrcPort)}
+
+	// put source address, source port, destination address, and destination port into a human-readable string
+	srcdst := src.String() + " => " + dst.String()
+	stream, found := s.streamsBySrcDst[srcdst]
+	if !found {
+		// create a new stream no matter what kind of packet this is
+		// later we will reject everything other than SYN packets sent to a fresh stream
+		stream = newStream(dst, src)
+
+		// define the function that wraps payloads in TCP and IP headers
+		stream.toSubprocess = func(payload []byte) {
+			sz := uint32(len(payload))
+
+			replytcp := layers.TCP{
+				SrcPort: tcp.DstPort,
+				DstPort: tcp.SrcPort,
+				Seq:     atomic.AddUint32(&stream.seq, sz) - sz, // sequence number on our side
+				Ack:     atomic.LoadUint32(&stream.ack),         // laste sequence number we saw on their side
+				ACK:     true,                                   // this indicates that we are acknolwedging some bytes
+				Window:  64240,                                  // number of bytes we are willing to receive (copied from sender)
+			}
+
+			replyipv4 := layers.IPv4{
+				Version:  4, // indicates IPv4
+				TTL:      ttl,
+				Protocol: layers.IPProtocolTCP,
+				SrcIP:    ipv4.DstIP,
+				DstIP:    ipv4.SrcIP,
+			}
+
+			replytcp.SetNetworkLayerForChecksum(&replyipv4)
+
+			// log
+			log.Printf("sending to subprocess (payload): %s", onelineTCP(&replyipv4, &replytcp, payload))
+
+			// serialize the data
+			packet, err := serializeTCP(&replyipv4, &replytcp, payload, stream.serializeBuf)
+			if err != nil {
+				log.Printf("error serializing TCP packet: %v, ignoring", err)
+				return
+			}
+
+			// make a copy because the same buffer will be re-used
+			cp := make([]byte, len(packet))
+			copy(cp, packet)
+
+			// send to the subprocess channel non-blocking
+			select {
+			case s.toSubprocess <- cp:
+			default:
+				log.Printf("channel for sending to subprocess would have blocked, dropping %d bytes", len(cp))
+			}
+		}
+
+		s.streamsBySrcDst[srcdst] = stream
+	}
+
+	// handle connection establishment
+	if tcp.SYN && stream.state == StateInit {
+		stream.state = StateSynchronizing
+		seq := atomic.AddUint32(&stream.seq, 1) - 1
+		atomic.StoreUint32(&stream.ack, tcp.Seq+1)
+		log.Printf("got SYN to %v:%v, now state is %v", ipv4.DstIP, tcp.DstPort, stream.state)
+
+		// dial the outside world
+		go stream.dial()
+
+		// reply to the subprocess as if the connection were already good to go
+		replytcp := layers.TCP{
+			SrcPort: tcp.DstPort,
+			DstPort: tcp.SrcPort,
+			SYN:     true,
+			ACK:     true,
+			Seq:     seq,
+			Ack:     tcp.Seq + 1,
+			Window:  64240, // number of bytes we are willing to receive (copied from sender)
+		}
+
+		replyipv4 := layers.IPv4{
+			Version:  4, // indicates IPv4
+			TTL:      ttl,
+			Protocol: layers.IPProtocolTCP,
+			SrcIP:    ipv4.DstIP,
+			DstIP:    ipv4.SrcIP,
+		}
+
+		replytcp.SetNetworkLayerForChecksum(&replyipv4)
+
+		// log
+		log.Printf("sending to subprocess (synack): %s", onelineTCP(&replyipv4, &replytcp, nil))
+
+		// serialize the packet
+		serialized, err := serializeTCP(&replyipv4, &replytcp, nil, stream.serializeBuf)
+		if err != nil {
+			log.Printf("error serializing reply TCP: %v, dropping", err)
+			return
+		}
+
+		// make a copy of the data
+		cp := make([]byte, len(serialized))
+		copy(cp, serialized)
+
+		// send to the channel that goes to the subprocess
+		select {
+		case s.toSubprocess <- cp:
+		default:
+			log.Printf("channel for sending to subprocess would have blocked, dropping %d bytes", len(cp))
+		}
+	}
+
+	if tcp.ACK && stream.state == StateSynchronizing {
+		stream.state = StateConnected
+		log.Printf("got ACK to %v:%v, now state is %v", ipv4.DstIP, tcp.DstPort, stream.state)
+
+		// nothing more to do here -- if there is a payload then it will be forwarded
+		// to the subprocess in the block below
+	}
+
+	// payload packets will often have ACK set, which acknowledges previously sent bytes
+	if !tcp.SYN && len(tcp.Payload) > 0 && stream.state == StateConnected {
+		log.Printf("got %d bytes to %v:%v (%q), forwarding to world", len(tcp.Payload), ipv4.DstIP, tcp.DstPort, preview(tcp.Payload))
+
+		// update sequence number
+		atomic.StoreUint32(&stream.ack, tcp.Seq+uint32(len(tcp.Payload)))
+
+		// forward the data to the world
+		stream.sendToWorld(tcp.Payload)
+	}
+}
+
 func Main() error {
 	ctx := context.Background()
 	var args struct {
@@ -366,7 +513,7 @@ func Main() error {
 	log.Printf("listening on %v", args.Tun)
 	go func() {
 		// all our tcp streams, keyed by source address, source port, destination address, and destination port
-		streamsBySrcDst := make(map[string]*Stream)
+		tcpstack := newTCPStack(toSubprocess)
 
 		buf := make([]byte, 1500)
 		for {
@@ -396,139 +543,7 @@ func Main() error {
 				log.Printf("received from subprocess: %v", oneline(packet))
 			}
 
-			// it happens that a process will connect to the same remote service multiple times in from
-			// different source ports so we must key by a descriptor that includes both endpoints
-			dst := AddrPort{Addr: ipv4.DstIP, Port: uint16(tcp.DstPort)}
-			src := AddrPort{Addr: ipv4.SrcIP, Port: uint16(tcp.SrcPort)}
-
-			// put source address, source port, destination address, and destination port into a human-readable string
-			srcdst := src.String() + " => " + dst.String()
-			stream, found := streamsBySrcDst[srcdst]
-			if !found {
-				// create a new stream no matter what kind of packet this is
-				// later we will reject everything other than SYN packets sent to a fresh stream
-				stream = newStream(dst, src)
-
-				// define the function that wraps payloads in TCP and IP headers
-				stream.toSubprocess = func(payload []byte) {
-					sz := uint32(len(payload))
-
-					replytcp := layers.TCP{
-						SrcPort: tcp.DstPort,
-						DstPort: tcp.SrcPort,
-						Seq:     atomic.AddUint32(&stream.seq, sz) - sz, // sequence number on our side
-						Ack:     atomic.LoadUint32(&stream.ack),         // laste sequence number we saw on their side
-						ACK:     true,                                   // this indicates that we are acknolwedging some bytes
-						Window:  64240,                                  // number of bytes we are willing to receive (copied from sender)
-					}
-
-					replyipv4 := layers.IPv4{
-						Version:  4, // indicates IPv4
-						TTL:      ttl,
-						Protocol: layers.IPProtocolTCP,
-						SrcIP:    ipv4.DstIP,
-						DstIP:    ipv4.SrcIP,
-					}
-
-					replytcp.SetNetworkLayerForChecksum(&replyipv4)
-
-					// log
-					log.Printf("sending to subprocess (payload): %s", onelineTCP(&replyipv4, &replytcp, payload))
-
-					// serialize the data
-					packet, err := serializeTCP(&replyipv4, &replytcp, payload, stream.serializeBuf)
-					if err != nil {
-						log.Printf("error serializing TCP packet: %v, ignoring", err)
-						return
-					}
-
-					// make a copy because the same buffer will be re-used
-					cp := make([]byte, len(packet))
-					copy(cp, packet)
-
-					// send to the subprocess channel non-blocking
-					select {
-					case toSubprocess <- cp:
-					default:
-						log.Printf("channel for sending to subprocess would have blocked, dropping %d bytes", len(cp))
-					}
-				}
-
-				streamsBySrcDst[srcdst] = stream
-			}
-
-			// handle connection establishment
-			if tcp.SYN && stream.state == StateInit {
-				stream.state = StateSynchronizing
-				seq := atomic.AddUint32(&stream.seq, 1) - 1
-				atomic.StoreUint32(&stream.ack, tcp.Seq+1)
-				log.Printf("got SYN to %v:%v, now state is %v", ipv4.DstIP, tcp.DstPort, stream.state)
-
-				// dial the outside world
-				go stream.dial()
-
-				// reply to the subprocess as if the connection were already good to go
-				replytcp := layers.TCP{
-					SrcPort: tcp.DstPort,
-					DstPort: tcp.SrcPort,
-					SYN:     true,
-					ACK:     true,
-					Seq:     seq,
-					Ack:     tcp.Seq + 1,
-					Window:  64240, // number of bytes we are willing to receive (copied from sender)
-				}
-
-				replyipv4 := layers.IPv4{
-					Version:  4, // indicates IPv4
-					TTL:      ttl,
-					Protocol: layers.IPProtocolTCP,
-					SrcIP:    ipv4.DstIP,
-					DstIP:    ipv4.SrcIP,
-				}
-
-				replytcp.SetNetworkLayerForChecksum(&replyipv4)
-
-				// log
-				log.Printf("sending to subprocess (synack): %s", onelineTCP(&replyipv4, &replytcp, nil))
-
-				// serialize the packet
-				serialized, err := serializeTCP(&replyipv4, &replytcp, nil, stream.serializeBuf)
-				if err != nil {
-					log.Printf("error serializing reply TCP: %v, dropping", err)
-					continue
-				}
-
-				// make a copy of the data
-				cp := make([]byte, len(serialized))
-				copy(cp, serialized)
-
-				// send to the channel that goes to the subprocess
-				select {
-				case toSubprocess <- cp:
-				default:
-					log.Printf("channel for sending to subprocess would have blocked, dropping %d bytes", len(cp))
-				}
-			}
-
-			if tcp.ACK && stream.state == StateSynchronizing {
-				stream.state = StateConnected
-				log.Printf("got ACK to %v:%v, now state is %v", ipv4.DstIP, tcp.DstPort, stream.state)
-
-				// nothing more to do here -- if there is a payload then it will be forwarded
-				// to the subprocess in the block below
-			}
-
-			// payload packets will often have ACK set, which acknowledges previously sent bytes
-			if !tcp.SYN && len(tcp.Payload) > 0 && stream.state == StateConnected {
-				log.Printf("got %d bytes to %v:%v (%q), forwarding to world", len(tcp.Payload), ipv4.DstIP, tcp.DstPort, preview(tcp.Payload))
-
-				// update sequence number
-				atomic.StoreUint32(&stream.ack, tcp.Seq+uint32(len(tcp.Payload)))
-
-				// forward the data to the world
-				stream.sendToWorld(tcp.Payload)
-			}
-
+			tcpstack.handlePacket(ipv4, tcp, tcp.Payload)
 		}
 	}()
 

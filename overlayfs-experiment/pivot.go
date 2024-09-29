@@ -57,20 +57,6 @@ func OverlayRoot(nodes ...Bakeable) (*Mount, error) {
 		return nil, fmt.Errorf("error getting current working directory")
 	}
 
-	// switch to a new mount namespace
-	err = unix.Unshare(unix.CLONE_NEWNS | unix.CLONE_FS)
-	if err != nil {
-		return nil, fmt.Errorf("error unsharing mounts: %w", err)
-	}
-
-	// make the root filesystem in this new namespace private, which prevents the
-	// mount below from leaking into the parent namespace
-	// per the man page, the first, third, and fifth arguments below are ignored
-	err = unix.Mount("ignored", "/", "ignored", unix.MS_PRIVATE|unix.MS_REC, "ignored")
-	if err != nil {
-		return nil, fmt.Errorf("error making root filesystem private")
-	}
-
 	// prepare some paths for the main mount syscall
 	newroot := filepath.Join(tmpdir, "merged") // this will be mounted as an overlayfs
 	oldroot := filepath.Join(newroot, "old")   // this is where the old root will be put by pivot_root
@@ -90,6 +76,20 @@ func OverlayRoot(nodes ...Bakeable) (*Mount, error) {
 		if err := node.Bake(layerdir); err != nil {
 			return nil, fmt.Errorf("error baking %T%#v: %w", node, node, err)
 		}
+	}
+
+	// switch to a new mount namespace
+	err = unix.Unshare(unix.CLONE_NEWNS | unix.CLONE_FS)
+	if err != nil {
+		return nil, fmt.Errorf("error unsharing mounts: %w", err)
+	}
+
+	// make the root filesystem in this new namespace private, which prevents the
+	// mount below from leaking into the parent namespace
+	// per the man page, the first, third, and fifth arguments below are ignored
+	err = unix.Mount("ignored", "/", "ignored", unix.MS_PRIVATE|unix.MS_REC, "ignored")
+	if err != nil {
+		return nil, fmt.Errorf("error making root filesystem private")
 	}
 
 	// mount an overlay filesystem

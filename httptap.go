@@ -230,12 +230,12 @@ func preview(b []byte) string {
 }
 
 // layernames makes a one-line list of layers in a packet
-func layernames(packet gopacket.Packet) string {
+func layernames(packet gopacket.Packet) []string {
 	var s []string
 	for _, layer := range packet.Layers() {
 		s = append(s, layer.LayerType().String())
 	}
-	return strings.Join(s, " ")
+	return s
 }
 
 // oneline makes a one-line summary of a tcp packet
@@ -245,12 +245,17 @@ func oneline(packet gopacket.Packet) string {
 		return fmt.Sprintf("<not an IPv4 packet (has %v)>", layernames(packet))
 	}
 
-	tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP)
-	if !ok {
-		return fmt.Sprintf("<not a TCP packet (has %v)>", layernames(packet))
+	tcp, isTCP := packet.Layer(layers.LayerTypeTCP).(*layers.TCP)
+	if isTCP {
+		return onelineTCP(ipv4, tcp, tcp.Payload)
 	}
 
-	return onelineTCP(ipv4, tcp, tcp.Payload)
+	udp, isUDP := packet.Layer(layers.LayerTypeTCP).(*layers.UDP)
+	if isUDP {
+		return onelineUDP(ipv4, udp, udp.Payload)
+	}
+
+	return fmt.Sprintf("<not a TCP packet (has %v)>", strings.Join(layernames(packet), ", "))
 }
 
 func onelineTCP(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte) string {
@@ -399,7 +404,59 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		replytcp.SetNetworkLayerForChecksum(&replyipv4)
 
 		// log
-		log.Printf("sending tcp to subprocess (synack): %s", onelineTCP(&replyipv4, &replytcp, nil))
+		log.Printf("sending SYN+ACK to subprocess: %s", onelineTCP(&replyipv4, &replytcp, nil))
+
+		// serialize the packet
+		serialized, err := serializeTCP(&replyipv4, &replytcp, nil, stream.serializeBuf)
+		if err != nil {
+			log.Printf("error serializing reply TCP: %v, dropping", err)
+			return
+		}
+
+		// make a copy of the data
+		cp := make([]byte, len(serialized))
+		copy(cp, serialized)
+
+		// send to the channel that goes to the subprocess
+		select {
+		case s.toSubprocess <- cp:
+		default:
+			log.Printf("channel for sending to subprocess would have blocked, dropping %d bytes", len(cp))
+		}
+	}
+
+	// handle connection establishment
+	if tcp.FIN && stream.state != StateInit {
+		// we should not send any more packets after we send our own FIN, but we can
+		// always safely ack the other side FIN
+		stream.state = StateFinished
+		seq := atomic.AddUint32(&stream.seq, 1) - 1
+		atomic.StoreUint32(&stream.ack, tcp.Seq+1)
+		log.Printf("got FIN to %v:%v, now state is %v", ipv4.DstIP, tcp.DstPort, stream.state)
+
+		// make a FIN+ACK reply to send to the subprocess
+		replytcp := layers.TCP{
+			SrcPort: tcp.DstPort,
+			DstPort: tcp.SrcPort,
+			FIN:     true,
+			ACK:     true,
+			Seq:     seq,
+			Ack:     tcp.Seq + 1,
+			Window:  64240, // number of bytes we are willing to receive (copied from sender)
+		}
+
+		replyipv4 := layers.IPv4{
+			Version:  4, // indicates IPv4
+			TTL:      ttl,
+			Protocol: layers.IPProtocolTCP,
+			SrcIP:    ipv4.DstIP,
+			DstIP:    ipv4.SrcIP,
+		}
+
+		replytcp.SetNetworkLayerForChecksum(&replyipv4)
+
+		// log
+		log.Printf("sending FIN+ACK to subprocess: %s", onelineTCP(&replyipv4, &replytcp, nil))
 
 		// serialize the packet
 		serialized, err := serializeTCP(&replyipv4, &replytcp, nil, stream.serializeBuf)

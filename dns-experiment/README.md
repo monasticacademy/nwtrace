@@ -1,0 +1,1 @@
+This is a DNS proxy that answers simple questions using Go's built-in resolver, which reads nsswitch.conf and resolv.conf and does a bunch of work to be as much like  gethostbyname, or even use gethostbyname when available via cgo.

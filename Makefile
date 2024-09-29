@@ -1,4 +1,7 @@
 
+bash:
+	make build
+	sudo /tmp/httptap bash
 
 test-with-netcat-http:
 	make build

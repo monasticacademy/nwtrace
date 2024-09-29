@@ -5,6 +5,8 @@ To discover where the widely used python package certifi reads its certificates 
 
 
 
+
+
 Print the available filesystem types:
 
     cat /proc/filesystems

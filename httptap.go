@@ -16,6 +16,7 @@ import (
 	"github.com/alexflint/go-arg"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+	"github.com/monasticacademy/httptap/pkg/overlayroot"
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -550,14 +551,12 @@ func Main() error {
 	defer newns.Close()
 
 	// create a tun device in the new namespace
-	config := water.Config{
+	tun, err := water.New(water.Config{
 		DeviceType: water.TUN,
 		PlatformSpecificParams: water.PlatformSpecificParams{
 			Name: args.Tun,
 		},
-	}
-
-	tun, err := water.New(config)
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -608,6 +607,15 @@ func Main() error {
 	if err != nil {
 		return fmt.Errorf("error creating default route: %w", err)
 	}
+
+	// overlay resolv.conf
+	//resolvConf := fmt.Sprintf("nameserver %v\n", args.Gateway)
+	resolvConf := "nameserver 1.1.1.1\n"
+	mount, err := overlayroot.Pivot(overlayroot.File("/etc/resolv.conf", []byte(resolvConf)))
+	if err != nil {
+		return fmt.Errorf("error setting up overlay: %w", err)
+	}
+	defer mount.Remove()
 
 	// launch a subprocess -- we are already in the network namespace so nothing special here
 	cmd := exec.Command(args.Command[0])

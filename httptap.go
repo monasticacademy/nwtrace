@@ -48,8 +48,8 @@ const (
 type stream struct {
 	protocol       string // can be "tcp" or "udp"
 	world          AddrPort
-	fromSubprocess chan []byte  // from the subprocess to the world
-	toSubprocess   func([]byte) // in means from the world to the subprocess
+	fromSubprocess chan []byte // from the subprocess to the world
+	toSubprocess   io.Writer   // application-level payloads are written here, and IP packets get sent
 
 	subprocess   AddrPort
 	serializeBuf gopacket.SerializeBuffer
@@ -99,7 +99,7 @@ func (s *stream) dial() {
 	go s.copyToWorld(conn, s.fromSubprocess)
 }
 
-func (s *stream) copyToSubprocess(toSubprocess func([]byte), fromWorld net.Conn) {
+func (s *stream) copyToSubprocess(toSubprocess io.Writer, fromWorld net.Conn) {
 	buf := make([]byte, 1<<20)
 	for {
 		n, err := fromWorld.Read(buf)
@@ -112,12 +112,11 @@ func (s *stream) copyToSubprocess(toSubprocess func([]byte), fromWorld net.Conn)
 			return
 		}
 
-		// copy the data
-		cp := make([]byte, n)
-		copy(cp, buf)
-
-		// send packet to channel, drop if it would block
-		toSubprocess(cp)
+		// send packet to channel, drop on failure
+		_, err = toSubprocess.Write(buf[:n])
+		if err != nil {
+			log.Printf("error writing %v data: %v, dropping %d bytes", s.protocol, err, n)
+		}
 	}
 }
 
@@ -326,48 +325,14 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		stream = newStream("tcp", dst, src)
 
 		// define the function that wraps payloads in TCP and IP headers
-		stream.toSubprocess = func(payload []byte) {
-			sz := uint32(len(payload))
-
-			replytcp := layers.TCP{
-				SrcPort: tcp.DstPort,
-				DstPort: tcp.SrcPort,
-				Seq:     atomic.AddUint32(&stream.seq, sz) - sz, // sequence number on our side
-				Ack:     atomic.LoadUint32(&stream.ack),         // laste sequence number we saw on their side
-				ACK:     true,                                   // this indicates that we are acknolwedging some bytes
-				Window:  64240,                                  // number of bytes we are willing to receive (copied from sender)
-			}
-
-			replyipv4 := layers.IPv4{
-				Version:  4, // indicates IPv4
-				TTL:      ttl,
-				Protocol: layers.IPProtocolTCP,
-				SrcIP:    ipv4.DstIP,
-				DstIP:    ipv4.SrcIP,
-			}
-
-			replytcp.SetNetworkLayerForChecksum(&replyipv4)
-
-			// log
-			log.Printf("sending tcp to subprocess (payload): %s", onelineTCP(&replyipv4, &replytcp, payload))
-
-			// serialize the data
-			packet, err := serializeTCP(&replyipv4, &replytcp, payload, stream.serializeBuf)
-			if err != nil {
-				log.Printf("error serializing TCP packet: %v, ignoring", err)
-				return
-			}
-
-			// make a copy because the same buffer will be re-used
-			cp := make([]byte, len(packet))
-			copy(cp, packet)
-
-			// send to the subprocess channel non-blocking
-			select {
-			case s.toSubprocess <- cp:
-			default:
-				log.Printf("channel for sending tcp to subprocess would have blocked, dropping %d bytes", len(cp))
-			}
+		stream.toSubprocess = &tcpWriter{
+			srcIP:   ipv4.SrcIP,
+			dstIP:   ipv4.DstIP,
+			srcPort: tcp.SrcPort,
+			dstPort: tcp.DstPort,
+			buf:     stream.serializeBuf,
+			out:     s.toSubprocess,
+			stream:  stream,
 		}
 
 		s.streamsBySrcDst[srcdst] = stream
@@ -498,6 +463,64 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 	}
 }
 
+// when you write to tcpWriter, it sends a raw TCP packet containing what you wrote to an
+// underlying channel
+type tcpWriter struct {
+	srcIP   net.IP
+	dstIP   net.IP
+	srcPort layers.TCPPort
+	dstPort layers.TCPPort
+	out     chan []byte
+	buf     gopacket.SerializeBuffer
+	stream  *stream
+}
+
+func (w *tcpWriter) Write(payload []byte) (int, error) {
+	sz := uint32(len(payload))
+
+	replytcp := layers.TCP{
+		SrcPort: w.dstPort,
+		DstPort: w.srcPort,
+		Seq:     atomic.AddUint32(&w.stream.seq, sz) - sz, // sequence number on our side
+		Ack:     atomic.LoadUint32(&w.stream.ack),         // laste sequence number we saw on their side
+		ACK:     true,                                     // this indicates that we are acknolwedging some bytes
+		Window:  64240,                                    // number of bytes we are willing to receive (copied from sender)
+	}
+
+	replyipv4 := layers.IPv4{
+		Version:  4, // indicates IPv4
+		TTL:      ttl,
+		Protocol: layers.IPProtocolTCP,
+		SrcIP:    w.dstIP,
+		DstIP:    w.srcIP,
+	}
+
+	replytcp.SetNetworkLayerForChecksum(&replyipv4)
+
+	// log
+	log.Printf("sending tcp to subprocess (payload): %s", onelineTCP(&replyipv4, &replytcp, payload))
+
+	// serialize the data
+	packet, err := serializeTCP(&replyipv4, &replytcp, payload, w.buf)
+	if err != nil {
+		return 0, fmt.Errorf("error serializing TCP packet: %w", err)
+	}
+
+	// make a copy because the same buffer will be re-used
+	cp := make([]byte, len(packet))
+	copy(cp, packet)
+
+	// send to the subprocess channel non-blocking
+	select {
+	case w.out <- cp:
+	default:
+		return 0, fmt.Errorf("channel would have blocked")
+	}
+
+	// return number of bytes sent to us, not number of bytes written to underlying network
+	return len(payload), nil
+}
+
 // UDP stack
 
 type udpStack struct {
@@ -516,6 +539,57 @@ func newUDPStack(toSubprocess chan []byte) *udpStack {
 	}
 }
 
+// when you write to udpWriter, it sends a raw TCP packet containing what you wrote to an
+// underlying channel
+type udpWriter struct {
+	srcIP   net.IP
+	dstIP   net.IP
+	srcPort layers.UDPPort
+	dstPort layers.UDPPort
+	out     chan []byte
+	buf     gopacket.SerializeBuffer
+}
+
+func (w *udpWriter) Write(payload []byte) (int, error) {
+	replyudp := layers.UDP{
+		SrcPort: w.dstPort,
+		DstPort: w.srcPort,
+	}
+
+	replyipv4 := layers.IPv4{
+		Version:  4, // indicates IPv4
+		TTL:      ttl,
+		Protocol: layers.IPProtocolUDP,
+		SrcIP:    w.dstIP,
+		DstIP:    w.srcIP,
+	}
+
+	replyudp.SetNetworkLayerForChecksum(&replyipv4)
+
+	// log
+	log.Printf("sending udp to subprocess: %s", onelineUDP(&replyipv4, &replyudp, payload))
+
+	// serialize the data
+	packet, err := serializeUDP(&replyipv4, &replyudp, payload, w.buf)
+	if err != nil {
+		return 0, fmt.Errorf("error serializing UDP packet: %w", err)
+	}
+
+	// make a copy because the same buffer will be re-used
+	cp := make([]byte, len(packet))
+	copy(cp, packet)
+
+	// send to the subprocess channel non-blocking
+	select {
+	case w.out <- cp:
+	default:
+		return 0, fmt.Errorf("channel for sending udp to subprocess would have blocked")
+	}
+
+	// return number of bytes passed in, not number of bytes sent to output
+	return len(payload), nil
+}
+
 func (s *udpStack) handlePacket(ipv4 *layers.IPv4, udp *layers.UDP, payload []byte) {
 	// it happens that a process will connect to the same remote service multiple times in from
 	// different source ports so we must key by a descriptor that includes both endpoints
@@ -531,42 +605,13 @@ func (s *udpStack) handlePacket(ipv4 *layers.IPv4, udp *layers.UDP, payload []by
 		stream = newStream("udp", dst, src)
 
 		// define the function that wraps payloads in TCP and IP headers
-		stream.toSubprocess = func(payload []byte) {
-			replyudp := layers.UDP{
-				SrcPort: udp.DstPort,
-				DstPort: udp.SrcPort,
-			}
-
-			replyipv4 := layers.IPv4{
-				Version:  4, // indicates IPv4
-				TTL:      ttl,
-				Protocol: layers.IPProtocolUDP,
-				SrcIP:    ipv4.DstIP,
-				DstIP:    ipv4.SrcIP,
-			}
-
-			replyudp.SetNetworkLayerForChecksum(&replyipv4)
-
-			// log
-			log.Printf("sending udp to subprocess (payload): %s", onelineUDP(&replyipv4, &replyudp, payload))
-
-			// serialize the data
-			packet, err := serializeUDP(&replyipv4, &replyudp, payload, stream.serializeBuf)
-			if err != nil {
-				log.Printf("error serializing UDP packet: %v, ignoring", err)
-				return
-			}
-
-			// make a copy because the same buffer will be re-used
-			cp := make([]byte, len(packet))
-			copy(cp, packet)
-
-			// send to the subprocess channel non-blocking
-			select {
-			case s.toSubprocess <- cp:
-			default:
-				log.Printf("channel for sending udp to subprocess would have blocked, dropping %d bytes", len(cp))
-			}
+		stream.toSubprocess = &udpWriter{
+			srcIP:   ipv4.DstIP,
+			dstIP:   ipv4.SrcIP,
+			srcPort: udp.DstPort,
+			dstPort: udp.SrcPort,
+			buf:     stream.serializeBuf,
+			out:     s.toSubprocess,
 		}
 
 		go stream.dial()
@@ -577,7 +622,7 @@ func (s *udpStack) handlePacket(ipv4 *layers.IPv4, udp *layers.UDP, payload []by
 	// if the packet is dns to the gateway then intercept and respond directly
 	if ipv4.DstIP.String() == s.dnsServer && udp.DstPort == s.dnsPort {
 		log.Printf("got a %d-byte dns packet to %v:%v (%q), responding directly", len(udp.Payload), ipv4.DstIP, udp.DstPort, preview(udp.Payload))
-		stream.handleDNS(udp.Payload)
+		go stream.handleDNS(context.Background(), stream.toSubprocess, udp.Payload)
 		return
 	}
 
@@ -587,7 +632,7 @@ func (s *udpStack) handlePacket(ipv4 *layers.IPv4, udp *layers.UDP, payload []by
 }
 
 // handle DNS directly -- payload here is the application-level UDP payload
-func (s *stream) handleDNS(payload []byte) {
+func (s *stream) handleDNS(ctx context.Context, w io.Writer, payload []byte) {
 	var req dns.Msg
 	err := req.Unpack(payload)
 	if err != nil {
@@ -597,9 +642,9 @@ func (s *stream) handleDNS(payload []byte) {
 
 	switch req.Opcode {
 	case dns.OpcodeQuery:
-		rrs, err := handleDNSQuery(&req)
+		rrs, err := handleDNSQuery(ctx, &req)
 		if err != nil {
-			log.Printf("dns failed for %s with error: %v, continuing...", req, err.Error())
+			log.Printf("dns failed for %v with error: %v, continuing...", req, err.Error())
 			// do not abort here, continue on
 		}
 
@@ -608,11 +653,10 @@ func (s *stream) handleDNS(payload []byte) {
 		resp.Answer = rrs
 		// TODO: w.WriteMsg(resp)
 	}
-
 }
 
 // handleDNSQuery resolves IPv4 hostnames according to net.DefaultResolver
-func handleDNSQuery(req *dns.Msg) ([]dns.RR, error) {
+func handleDNSQuery(ctx context.Context, req *dns.Msg) ([]dns.RR, error) {
 	const upstreamDNS = "1.1.1.1:53" // TODO: get from resolv.conf and nsswitch.conf
 
 	if len(req.Question) == 0 {
@@ -621,8 +665,6 @@ func handleDNSQuery(req *dns.Msg) ([]dns.RR, error) {
 
 	question := req.Question[0]
 	log.Printf("got dns request for %v", question.Name)
-
-	ctx := context.Background()
 
 	// handle the request ourselves
 	switch question.Qtype {
@@ -647,13 +689,13 @@ func handleDNSQuery(req *dns.Msg) ([]dns.RR, error) {
 	log.Println("proxying the request...")
 
 	// proxy the request to another server
-	queryMsg := new(dns.Msg)
-	req.CopyTo(queryMsg)
-	queryMsg.Question = []dns.Question{question}
+	request := new(dns.Msg)
+	req.CopyTo(request)
+	request.Question = []dns.Question{question}
 
 	dnsClient := new(dns.Client)
 	dnsClient.Net = "udp"
-	response, _, err := dnsClient.Exchange(queryMsg, upstreamDNS)
+	response, _, err := dnsClient.Exchange(request, upstreamDNS)
 	if err != nil {
 		return nil, err
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/alexflint/go-arg"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+	"github.com/miekg/dns"
 	"github.com/monasticacademy/httptap/pkg/overlayroot"
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
@@ -502,6 +503,10 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 type udpStack struct {
 	streamsBySrcDst map[string]*stream
 	toSubprocess    chan []byte // data sent to this channel goes to subprocess as raw IPv4 packet
+
+	// packets to this dns server+port are intercepted and replied to directly
+	dnsServer string
+	dnsPort   layers.UDPPort
 }
 
 func newUDPStack(toSubprocess chan []byte) *udpStack {
@@ -569,14 +574,102 @@ func (s *udpStack) handlePacket(ipv4 *layers.IPv4, udp *layers.UDP, payload []by
 		s.streamsBySrcDst[srcdst] = stream
 	}
 
+	// if the packet is dns to the gateway then intercept and respond directly
+	if ipv4.DstIP.String() == s.dnsServer && udp.DstPort == s.dnsPort {
+		log.Printf("got a %d-byte dns packet to %v:%v (%q), responding directly", len(udp.Payload), ipv4.DstIP, udp.DstPort, preview(udp.Payload))
+		stream.handleDNS(udp.Payload)
+		return
+	}
+
 	// forward the data to the world
 	log.Printf("got %d udp bytes to %v:%v (%q), forwarding to world", len(udp.Payload), ipv4.DstIP, udp.DstPort, preview(udp.Payload))
 	stream.sendToWorld(udp.Payload)
 }
 
+// handle DNS directly -- payload here is the application-level UDP payload
+func (s *stream) handleDNS(payload []byte) {
+	var req dns.Msg
+	err := req.Unpack(payload)
+	if err != nil {
+		log.Printf("error unpacking dns packet: %v, ignoring", err)
+		return
+	}
+
+	switch req.Opcode {
+	case dns.OpcodeQuery:
+		rrs, err := handleDNSQuery(&req)
+		if err != nil {
+			log.Printf("dns failed for %s with error: %v, continuing...", req, err.Error())
+			// do not abort here, continue on
+		}
+
+		resp := new(dns.Msg)
+		resp.SetReply(&req)
+		resp.Answer = rrs
+		// TODO: w.WriteMsg(resp)
+	}
+
+}
+
+// handleDNSQuery resolves IPv4 hostnames according to net.DefaultResolver
+func handleDNSQuery(req *dns.Msg) ([]dns.RR, error) {
+	const upstreamDNS = "1.1.1.1:53" // TODO: get from resolv.conf and nsswitch.conf
+
+	if len(req.Question) == 0 {
+		return nil, nil // this means no answer, no error, which is fine
+	}
+
+	question := req.Question[0]
+	log.Printf("got dns request for %v", question.Name)
+
+	ctx := context.Background()
+
+	// handle the request ourselves
+	switch question.Qtype {
+	case dns.TypeA:
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", question.Name)
+		if err != nil {
+			return nil, fmt.Errorf("the default resolver said: %w", err)
+		}
+
+		var rrs []dns.RR
+		for _, ip := range ips {
+			rrline := fmt.Sprintf("%s A %s", question.Name, ip)
+			rr, err := dns.NewRR(rrline)
+			if err != nil {
+				return nil, fmt.Errorf("error constructing rr: %w", err)
+			}
+			rrs = append(rrs, rr)
+		}
+		return rrs, nil
+	}
+
+	log.Println("proxying the request...")
+
+	// proxy the request to another server
+	queryMsg := new(dns.Msg)
+	req.CopyTo(queryMsg)
+	queryMsg.Question = []dns.Question{question}
+
+	dnsClient := new(dns.Client)
+	dnsClient.Net = "udp"
+	response, _, err := dnsClient.Exchange(queryMsg, upstreamDNS)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Printf("got answer from upstream dns server with %d answers", len(response.Answer))
+
+	if len(response.Answer) > 0 {
+		return response.Answer, nil
+	}
+	return nil, fmt.Errorf("not found")
+}
+
 func Main() error {
 	ctx := context.Background()
 	var args struct {
+		Verbose bool     `arg:"-v,--verbose"`
 		Tun     string   `default:"httptap"`
 		Link    string   `default:"10.1.1.100/24"`
 		Route   string   `default:"0.0.0.0/0"`
@@ -615,7 +708,7 @@ func Main() error {
 		},
 	})
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("error creating tun device: %w", err)
 	}
 
 	// find the link for the device we just created
@@ -666,8 +759,7 @@ func Main() error {
 	}
 
 	// overlay resolv.conf
-	//resolvConf := fmt.Sprintf("nameserver %v\n", args.Gateway)
-	resolvConf := "nameserver 1.1.1.1\n"
+	resolvConf := fmt.Sprintf("nameserver %s\n", args.Gateway)
 	mount, err := overlayroot.Pivot(overlayroot.File("/etc/resolv.conf", []byte(resolvConf)))
 	if err != nil {
 		return fmt.Errorf("error setting up overlay: %w", err)

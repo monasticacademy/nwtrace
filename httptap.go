@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"runtime"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
+	"golang.org/x/sys/unix"
 )
 
 const dumpPacketsToSubprocess = false
@@ -716,6 +718,7 @@ func Main() error {
 		Link    string   `default:"10.1.1.100/24"`
 		Route   string   `default:"0.0.0.0/0"`
 		Gateway string   `default:"10.1.1.1"`
+		User    string   `help:"run command as this user (username or id)"`
 		Command []string `arg:"positional"`
 	}
 	arg.MustParse(&args)
@@ -724,7 +727,14 @@ func Main() error {
 		args.Command = []string{"/bin/sh"}
 	}
 
-	// lock the OS thread in order to switch network namespaces (network namespaces are thread-specific)
+	// save the working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("error getting current working directory: %w", err)
+	}
+	_ = cwd
+
+	// lock the OS thread because network and mount namespaces are specific to a single OS thread
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -808,13 +818,57 @@ func Main() error {
 	}
 	defer mount.Remove()
 
+	// switch user and group id if requested
+	if args.User != "" {
+		u, err := user.Lookup(args.User)
+		if err != nil {
+			return fmt.Errorf("error looking up user %q: %w", args.User, err)
+		}
+
+		uid, err := strconv.Atoi(u.Uid)
+		if err != nil {
+			return fmt.Errorf("error parsing user id %q as a number: %w", u.Uid, err)
+		}
+
+		gid, err := strconv.Atoi(u.Gid)
+		if err != nil {
+			return fmt.Errorf("error parsing group id %q as a number: %w", u.Gid, err)
+		}
+		_ = gid
+
+		// there are three (!) user/group IDs for a process: the real, effective, and saved
+		// they have the purpose of allowing the process to go "back" to them
+		// here we set all three of them
+
+		err = unix.Setgid(gid)
+		if err != nil {
+			log.Printf("error switching to group %q (gid %v): %v", args.User, gid, err)
+		}
+
+		//err = unix.Setresuid(uid, uid, uid)
+		err = unix.Setuid(uid)
+		if err != nil {
+			log.Printf("error switching to user %q (uid %v): %v", args.User, uid, err)
+		}
+
+		log.Printf("now in uid %d, gid %d", unix.Getuid(), unix.Getgid())
+
+		// err = unix.Setresgid(gid, gid, gid)
+		// if err != nil {
+		// 	log.Printf("error switching to group for user %q (gid %v): %v", args.User, gid, err)
+		// }
+	}
+
+	log.Println("running subcommand now ================")
+
 	// launch a subprocess -- we are already in the network namespace so nothing special here
 	cmd := exec.Command(args.Command[0])
+	cmd.Dir = cwd // pivot_root will have changed our work dir to /old/...
 	cmd.Args = args.Command
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = []string{"PS1=HTTPTAP # "}
+	cmd.Env = append(os.Environ(), "PS1=HTTPTAP # ", "HTTPTAP=1")
 	err = cmd.Start()
 	if err != nil {
 		return fmt.Errorf("error starting subprocess: %w", err)

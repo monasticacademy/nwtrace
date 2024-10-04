@@ -240,26 +240,6 @@ func layernames(packet gopacket.Packet) []string {
 	return s
 }
 
-// oneline makes a one-line summary of a tcp packet
-func oneline(packet gopacket.Packet) string {
-	ipv4, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4)
-	if !ok {
-		return fmt.Sprintf("<not an IPv4 packet (has %v)>", layernames(packet))
-	}
-
-	tcp, isTCP := packet.Layer(layers.LayerTypeTCP).(*layers.TCP)
-	if isTCP {
-		return onelineTCP(ipv4, tcp, tcp.Payload)
-	}
-
-	udp, isUDP := packet.Layer(layers.LayerTypeTCP).(*layers.UDP)
-	if isUDP {
-		return onelineUDP(ipv4, udp, udp.Payload)
-	}
-
-	return fmt.Sprintf("<not a TCP packet (has %v)>", strings.Join(layernames(packet), ", "))
-}
-
 func onelineTCP(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte) string {
 	var flags []string
 	if tcp.FIN {
@@ -544,32 +524,32 @@ func newUDPStack(toSubprocess chan []byte) *udpStack {
 // when you write to udpWriter, it sends a raw TCP packet containing what you wrote to an
 // underlying channel
 type udpWriter struct {
-	srcIP   net.IP
-	dstIP   net.IP
-	srcPort layers.UDPPort
-	dstPort layers.UDPPort
-	out     chan []byte
-	buf     gopacket.SerializeBuffer
+	ourIP     net.IP                   // IP address that we are acting as in this connection (not necessarily our real IP)
+	theirIP   net.IP                   // IP address that other side (the subprocess) considers to be theirs
+	ourPort   layers.UDPPort           // port that we will put as "source port" on packets we send (not necessarily really ours)
+	theirPort layers.UDPPort           // port that other side (the subprocess) considers to be theirs
+	out       chan []byte              // we send raw IP packets to this channel in order to transmit
+	buf       gopacket.SerializeBuffer // buffer used to serialize packets
 }
 
 func (w *udpWriter) Write(payload []byte) (int, error) {
 	replyudp := layers.UDP{
-		SrcPort: w.dstPort,
-		DstPort: w.srcPort,
+		SrcPort: w.ourPort,
+		DstPort: w.theirPort,
 	}
 
 	replyipv4 := layers.IPv4{
 		Version:  4, // indicates IPv4
 		TTL:      ttl,
 		Protocol: layers.IPProtocolUDP,
-		SrcIP:    w.dstIP,
-		DstIP:    w.srcIP,
+		SrcIP:    w.ourIP,
+		DstIP:    w.theirIP,
 	}
 
 	replyudp.SetNetworkLayerForChecksum(&replyipv4)
 
 	// log
-	log.Printf("sending udp to subprocess: %s", onelineUDP(&replyipv4, &replyudp, payload))
+	log.Printf("sending udp packet to subprocess: %s", onelineUDP(&replyipv4, &replyudp, payload))
 
 	// serialize the data
 	packet, err := serializeUDP(&replyipv4, &replyudp, payload, w.buf)
@@ -608,12 +588,12 @@ func (s *udpStack) handlePacket(ipv4 *layers.IPv4, udp *layers.UDP, payload []by
 
 		// define the function that wraps payloads in TCP and IP headers
 		stream.toSubprocess = &udpWriter{
-			srcIP:   ipv4.DstIP,
-			dstIP:   ipv4.SrcIP,
-			srcPort: udp.DstPort,
-			dstPort: udp.SrcPort,
-			buf:     stream.serializeBuf,
-			out:     s.toSubprocess,
+			ourIP:     ipv4.DstIP,
+			theirIP:   ipv4.SrcIP,
+			ourPort:   udp.DstPort,
+			theirPort: udp.SrcPort,
+			buf:       stream.serializeBuf,
+			out:       s.toSubprocess,
 		}
 
 		go stream.dial()
@@ -911,14 +891,14 @@ func Main() error {
 				log.Println(strings.Repeat("=", 80))
 				log.Println("From subprocess:")
 				log.Println(packet.Dump())
-			} else {
-				log.Printf("received from subprocess: %v", oneline(packet))
 			}
 
 			if isTCP {
+				log.Printf("received from subprocess: %v", onelineTCP(ipv4, tcp, tcp.Payload))
 				tcpstack.handlePacket(ipv4, tcp, tcp.Payload)
 			}
 			if isUDP {
+				log.Printf("received from subprocess: %v", onelineUDP(ipv4, udp, udp.Payload))
 				udpstack.handlePacket(ipv4, udp, udp.Payload)
 			}
 		}

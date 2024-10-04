@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/alexflint/go-arg"
@@ -87,51 +88,6 @@ func (s *stream) sendToWorld(payload []byte) {
 	case s.fromSubprocess <- cp:
 	default:
 		log.Printf("channel to world would block, dropping %d bytes", len(payload))
-	}
-}
-
-func (s *stream) dial() {
-	conn, err := net.Dial(s.protocol, s.world.String())
-	if err != nil {
-		log.Printf("service loop exited with error: %v", err)
-		return
-	}
-
-	go s.copyToSubprocess(s.toSubprocess, conn)
-	go s.copyToWorld(conn, s.fromSubprocess)
-}
-
-func (s *stream) copyToSubprocess(toSubprocess io.Writer, fromWorld net.Conn) {
-	buf := make([]byte, 1<<20)
-	for {
-		n, err := fromWorld.Read(buf)
-		if err == io.EOF {
-			// how to indicate to outside world that we're done?
-			return
-		}
-		if err != nil {
-			// how to indicate to outside world that the read failed?
-			return
-		}
-
-		// send packet to channel, drop on failure
-		_, err = toSubprocess.Write(buf[:n])
-		if err != nil {
-			log.Printf("error writing %v data: %v, dropping %d bytes", s.protocol, err, n)
-		}
-	}
-}
-
-func (s *stream) copyToWorld(toWorld net.Conn, fromSubprocess chan []byte) {
-	for packet := range fromSubprocess {
-		log.Printf("stream writing %d bytes (%q) to world connection", len(packet), preview(packet))
-		_, err := toWorld.Write(packet)
-
-		if err != nil {
-			// how to indicate to outside world that the write failed?
-			log.Printf("failed to write %d bytes from subprocess to world: %v", len(packet), err)
-			return
-		}
 	}
 }
 
@@ -283,12 +239,65 @@ func onelineUDP(ipv4 *layers.IPv4, udp *layers.UDP, payload []byte) string {
 type tcpStack struct {
 	streamsBySrcDst map[string]*stream
 	toSubprocess    chan []byte // data sent to this channel goes to subprocess as raw IPv4 packet
+
+	listenerMu sync.Mutex
+	listeners  []*tcpListener
 }
 
 func newTCPStack(toSubprocess chan []byte) *tcpStack {
 	return &tcpStack{
 		streamsBySrcDst: make(map[string]*stream),
 		toSubprocess:    toSubprocess,
+	}
+}
+
+// tcpListener is the interface for the application to intercept TCP connections
+type tcpListener struct {
+	pattern     string
+	connections chan *stream // the tcpStack sends streams here when they are created and they match the pattern above
+}
+
+// Accept accepts an intercepted connection. Later this will implement net.Listener.Accept
+func (l *tcpListener) Accept() (*stream, error) {
+	stream := <-l.connections
+	if stream == nil {
+		// this means the channel is closed, which means the tcpStack was shut down
+		return nil, net.ErrClosed
+	}
+	return stream, nil
+}
+
+// Listen returns a stream when a new stream is created.
+//
+// Pattern can a hostname, a :port, a hostname:port, or "*" for everything". For example:
+//   - "example.com"
+//   - "example.com:80"
+//   - ":80"
+//   - "*"
+//
+// Later this will be like net.Listen
+func (s *tcpStack) Listen(pattern string) *tcpListener {
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
+
+	listener := tcpListener{pattern: pattern, connections: make(chan *stream, 64)}
+	s.listeners = append(s.listeners, &listener)
+	return &listener
+}
+
+// notifyListeners is called when a new TCP stream is created. It finds the first listener
+// that will accept the given stream. It never blocks.
+func (s *tcpStack) notifyListeners(stream *stream) {
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
+
+	for _, listener := range s.listeners {
+		// for now, always send it to the first listener that is ready
+		select {
+		case listener.connections <- stream:
+			return
+		default:
+		}
 	}
 }
 
@@ -308,16 +317,18 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 
 		// define the function that wraps payloads in TCP and IP headers
 		stream.toSubprocess = &tcpWriter{
-			srcIP:   ipv4.SrcIP,
-			dstIP:   ipv4.DstIP,
-			srcPort: tcp.SrcPort,
-			dstPort: tcp.DstPort,
-			buf:     stream.serializeBuf,
-			out:     s.toSubprocess,
-			stream:  stream,
+			theirIP:   ipv4.SrcIP,
+			ourIP:     ipv4.DstIP,
+			theirPort: tcp.SrcPort,
+			ourPort:   tcp.DstPort,
+			buf:       stream.serializeBuf,
+			out:       s.toSubprocess,
+			stream:    stream,
 		}
 
 		s.streamsBySrcDst[srcdst] = stream
+
+		s.notifyListeners(stream)
 	}
 
 	// handle connection establishment
@@ -326,9 +337,6 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		seq := atomic.AddUint32(&stream.seq, 1) - 1
 		atomic.StoreUint32(&stream.ack, tcp.Seq+1)
 		log.Printf("got SYN to %v:%v, now state is %v", ipv4.DstIP, tcp.DstPort, stream.state)
-
-		// dial the outside world
-		go stream.dial()
 
 		// reply to the subprocess as if the connection were already good to go
 		replytcp := layers.TCP{
@@ -448,21 +456,21 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 // when you write to tcpWriter, it sends a raw TCP packet containing what you wrote to an
 // underlying channel
 type tcpWriter struct {
-	srcIP   net.IP
-	dstIP   net.IP
-	srcPort layers.TCPPort
-	dstPort layers.TCPPort
-	out     chan []byte
-	buf     gopacket.SerializeBuffer
-	stream  *stream
+	ourIP     net.IP                   // IP address that we are acting as in this connection (not necessarily our real IP)
+	theirIP   net.IP                   // IP address that other side (the subprocess) considers to be theirs
+	ourPort   layers.TCPPort           // port that we will put as "source port" on packets we send (not necessarily really ours)
+	theirPort layers.TCPPort           // port that other side (the subprocess) considers to be theirs
+	out       chan []byte              // we send raw IP packets to this channel in order to transmit
+	buf       gopacket.SerializeBuffer // buffer used to serialize packets
+	stream    *stream
 }
 
 func (w *tcpWriter) Write(payload []byte) (int, error) {
 	sz := uint32(len(payload))
 
 	replytcp := layers.TCP{
-		SrcPort: w.dstPort,
-		DstPort: w.srcPort,
+		SrcPort: w.ourPort,
+		DstPort: w.theirPort,
 		Seq:     atomic.AddUint32(&w.stream.seq, sz) - sz, // sequence number on our side
 		Ack:     atomic.LoadUint32(&w.stream.ack),         // laste sequence number we saw on their side
 		ACK:     true,                                     // this indicates that we are acknolwedging some bytes
@@ -473,14 +481,14 @@ func (w *tcpWriter) Write(payload []byte) (int, error) {
 		Version:  4, // indicates IPv4
 		TTL:      ttl,
 		Protocol: layers.IPProtocolTCP,
-		SrcIP:    w.dstIP,
-		DstIP:    w.srcIP,
+		SrcIP:    w.ourIP,
+		DstIP:    w.theirIP,
 	}
 
 	replytcp.SetNetworkLayerForChecksum(&replyipv4)
 
 	// log
-	log.Printf("sending tcp to subprocess (payload): %s", onelineTCP(&replyipv4, &replytcp, payload))
+	log.Printf("sending tcp packet to subprocess: %s", onelineTCP(&replyipv4, &replytcp, payload))
 
 	// serialize the data
 	packet, err := serializeTCP(&replyipv4, &replytcp, payload, w.buf)
@@ -518,6 +526,8 @@ func newUDPStack(toSubprocess chan []byte) *udpStack {
 	return &udpStack{
 		streamsBySrcDst: make(map[string]*stream),
 		toSubprocess:    toSubprocess,
+		dnsServer:       "10.1.1.1",
+		dnsPort:         layers.UDPPort(53),
 	}
 }
 
@@ -596,7 +606,7 @@ func (s *udpStack) handlePacket(ipv4 *layers.IPv4, udp *layers.UDP, payload []by
 			out:       s.toSubprocess,
 		}
 
-		go stream.dial()
+		go proxyUDPConn(stream)
 
 		s.streamsBySrcDst[srcdst] = stream
 	}
@@ -622,18 +632,36 @@ func (s *stream) handleDNS(ctx context.Context, w io.Writer, payload []byte) {
 		return
 	}
 
-	switch req.Opcode {
-	case dns.OpcodeQuery:
-		rrs, err := handleDNSQuery(ctx, &req)
-		if err != nil {
-			log.Printf("dns failed for %v with error: %v, continuing...", req, err.Error())
-			// do not abort here, continue on
-		}
+	if req.Opcode != dns.OpcodeQuery {
+		log.Printf("ignoring a dns query with non-query opcode (%v)", req.Opcode)
+		return
+	}
 
-		resp := new(dns.Msg)
-		resp.SetReply(&req)
-		resp.Answer = rrs
-		// TODO: w.WriteMsg(resp)
+	// resolve the query
+	rrs, err := handleDNSQuery(ctx, &req)
+	if err != nil {
+		log.Printf("dns failed for %v with error: %v, sending a response with empty answer", req, err.Error())
+		// do not abort here, continue on and send a reply with no answer
+		// because the client might easily have tried to resolve a non-existent
+		// hostname
+	}
+
+	resp := new(dns.Msg)
+	resp.SetReply(&req)
+	resp.Answer = rrs
+
+	// serialize the response
+	buf, err := resp.Pack()
+	if err != nil {
+		log.Printf("error serializing dns response: %v, abandoning...", err)
+		return
+	}
+
+	// always send the entire buffer in a single Write() since UDP writes one packet per call to Write()
+	_, err = w.Write(buf)
+	if err != nil {
+		log.Printf("error writing dns response: %v, abandoning...", err)
+		return
 	}
 }
 
@@ -688,6 +716,96 @@ func handleDNSQuery(ctx context.Context, req *dns.Msg) ([]dns.RR, error) {
 		return response.Answer, nil
 	}
 	return nil, fmt.Errorf("not found")
+}
+
+// proxyTCP accepts connections on the given listener. For each one it dials the outside world
+// and proxies data back and forth. It blocks until the listener returns an error, which only
+// happens when the TCP stack shuts down.
+func proxyTCP(l *tcpListener) error {
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			return fmt.Errorf("listener.Accept returned with error: %w", err)
+		}
+
+		// dial will take a while to complete; do not block on next accept
+		go proxyTCPConn(conn)
+	}
+}
+
+// proxyTCPConn proxies data received on one TCP connection to the world, and back the other way.
+func proxyTCPConn(s *stream) {
+	conn, err := net.Dial("tcp", s.world.String())
+	if err != nil {
+		log.Printf("service loop exited with error: %v", err)
+		return
+	}
+
+	go proxyWorldToSubprocess(s.toSubprocess, conn)
+	go proxySubprocessToWorld(conn, s.fromSubprocess)
+}
+
+// proxyUDP accepts connections on the given listener. For each one it dials the outside world
+// and proxies data back and forth. It blocks until the listener returns an error, which only
+// happens when the UDP stack shuts down.
+// func proxyUDP(l *udpListener) error {
+// 	for {
+// 		conn, err := l.Accept()
+// 		if err != nil {
+// 			return fmt.Errorf("listener.Accept returned with error: %w", err)
+// 		}
+
+// 		// dial will take a while to complete; do not block on next accept
+// 		go proxyUDPConn(conn)
+// 	}
+// }
+
+// proxyUDPConn proxies data received on one UDP connection to the world, and back the other way.
+func proxyUDPConn(s *stream) {
+	conn, err := net.Dial("udp", s.world.String())
+	if err != nil {
+		log.Printf("service loop exited with error: %v", err)
+		return
+	}
+
+	go proxyWorldToSubprocess(s.toSubprocess, conn)
+	go proxySubprocessToWorld(conn, s.fromSubprocess)
+}
+
+// proxyWorldToSubprocess copies packets received from the world to the subprocess
+func proxyWorldToSubprocess(toSubprocess io.Writer, fromWorld net.Conn) {
+	buf := make([]byte, 1<<20)
+	for {
+		n, err := fromWorld.Read(buf)
+		if err == io.EOF {
+			// how to indicate to outside world that we're done?
+			return
+		}
+		if err != nil {
+			// how to indicate to outside world that the read failed?
+			log.Printf("failed to read from world in proxy: %v, abandoning", err)
+			return
+		}
+
+		// send packet to channel, drop on failure
+		_, err = toSubprocess.Write(buf[:n])
+		if err != nil {
+			log.Printf("error writing data to subprocess: %v, dropping %d bytes", err, n)
+		}
+	}
+}
+
+// proxyWorldToSubprocess copies packets received from the subprocess to the world
+func proxySubprocessToWorld(toWorld net.Conn, fromSubprocess chan []byte) {
+	for packet := range fromSubprocess {
+		log.Printf("stream writing %d bytes (%q) to world connection", len(packet), preview(packet))
+		_, err := toWorld.Write(packet)
+		if err != nil {
+			// how to indicate to outside world that the write failed?
+			log.Printf("failed to write %d bytes from subprocess to world: %v", len(packet), err)
+			return
+		}
+	}
 }
 
 func Main() error {
@@ -862,10 +980,14 @@ func Main() error {
 	// when the subprocess completes
 	log.Printf("listening on %v", args.Tun)
 	go func() {
-		// all our tcp streams, keyed by source address, source port, destination address, and destination port
+		// instantiate the tcp and udp stacks
 		tcpstack := newTCPStack(toSubprocess)
 		udpstack := newUDPStack(toSubprocess)
 
+		// start listening for TCP and proxy each one to the world
+		go proxyTCP(tcpstack.Listen("*"))
+
+		// start reading raw bytes from the tunnel device and sending them to the appropriate stack
 		buf := make([]byte, 1500)
 		for {
 			n, err := tun.Read(buf)

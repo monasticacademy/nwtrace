@@ -1,6 +1,8 @@
 .bin
 .build/
 .vscode/
+*.crt
+*.pem
 
 **/secrets/*
 !**/secrets/*.encrypted

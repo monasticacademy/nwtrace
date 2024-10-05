@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -23,10 +24,14 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 		log.Printf("intercepted a connection to %v", conn.LocalAddr())
 
 		go func() {
+			var challenge string
+
 			// create a tls server with certificates generated on-the-fly from our root CA
 			tlsconn := tls.Server(conn, &tls.Config{
 				GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 					log.Printf("got challenge for %q", hello.ServerName)
+					challenge = hello.ServerName
+
 					onthefly, err := certin.NewCert(root, certin.Request{CN: hello.ServerName})
 					if err != nil {
 						log.Println("error creating cert: %w", err)
@@ -60,9 +65,27 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 				return
 			}
 
-			log.Printf("intercepted %v %v (%q), replying with 200", req.Method, req.URL, preview(body))
+			respbody := fmt.Sprintf("hello from httptap[%v]", challenge)
 
-			tlsconn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhello from httptap\r\n\r\n"))
+			resp := http.Response{
+				Status:        "200 OK",
+				StatusCode:    http.StatusOK,
+				Proto:         "HTTP/1.1",
+				ProtoMajor:    1,
+				ProtoMinor:    1,
+				ContentLength: int64(len(respbody)),
+				Body:          io.NopCloser(bytes.NewReader([]byte(respbody))),
+			}
+
+			err = resp.Write(tlsconn)
+			if err != nil {
+				log.Printf("error writing response to tls server conn: %v", err)
+				return
+			}
+
+			log.Printf("intercepted %v %v (%q), replyied with 200", req.Method, req.URL, preview(body))
+
+			//tlsconn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhello from httptap\r\n\r\n"))
 		}()
 	}
 }

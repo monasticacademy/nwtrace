@@ -152,7 +152,8 @@ func Main() error {
 	}
 
 	// write the certificate authority to a temporary file
-	err = writeCertFile(ca.Certificate.Raw, "/tmp/ca.crt")
+	caPath := "/tmp/httptap.cert"
+	err = writeCertFile(ca.Certificate.Raw, caPath)
 	if err != nil {
 		return err
 	}
@@ -276,6 +277,15 @@ func Main() error {
 		log.Printf("now in uid %d, gid %d", unix.Getuid(), unix.Getgid())
 	}
 
+	// create environment for the subprocess
+	env := append(
+		os.Environ(),
+		"PS1=HTTPTAP # ",
+		"HTTPTAP=1",
+		"CURL_CA_BUNDLE="+caPath,
+		"REQUESTS_CA_BUNDLE="+caPath,
+		"SSL_CERT_FILE="+caPath,
+	)
 	log.Println("running subcommand now ================")
 
 	// launch a subprocess -- we are already in the network namespace so nothing special here
@@ -285,7 +295,7 @@ func Main() error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(), "PS1=HTTPTAP # ", "HTTPTAP=1")
+	cmd.Env = env
 	err = cmd.Start()
 	if err != nil {
 		return fmt.Errorf("error starting subprocess: %w", err)

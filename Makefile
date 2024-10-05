@@ -21,6 +21,11 @@ test-with-curl:
 	make build
 	.build/httptap -- bash -c "curl -s http://example.com > out"
 
+test-with-curl-https:
+	rm -f out
+	make build
+	.build/httptap -- bash -c "curl -v -s https://example.com > out"
+
 test-with-curl-monasticacademy:
 	rm -f out
 	make build

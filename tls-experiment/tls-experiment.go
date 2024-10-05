@@ -46,6 +46,12 @@ func Main() error {
 		return fmt.Errorf("error creating root CA: %w", err)
 	}
 
+	// write the certificate authority to a temporary file
+	err = writeCertFile(root.Certificate.Raw, "ca.crt")
+	if err != nil {
+		return err
+	}
+
 	// leaf, err := certin.NewCert(root, certin.Request{
 	// 	CN:   "example.com",
 	// 	SANs: []string{"example.com", "www.example.com", "127.0.0.1"},
@@ -53,12 +59,6 @@ func Main() error {
 	// if err != nil {
 	// 	return fmt.Errorf("error creating leaf certificate: %w", err)
 	// }
-
-	// write the certificate authority to a temporary file
-	err = writeCertFile(root.Certificate.Raw, "ca.crt")
-	if err != nil {
-		return err
-	}
 
 	// write the server certificate to a temporary file
 	// err = writeCertFile(leaf.Certificate.Raw, "certificate.crt")

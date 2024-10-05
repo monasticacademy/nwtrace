@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/pem"
 	"fmt"
 	"log"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"github.com/alexflint/go-arg"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+	"github.com/joemiller/certin"
 	"github.com/monasticacademy/httptap/pkg/bindfiles"
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
@@ -99,6 +101,26 @@ func layernames(packet gopacket.Packet) []string {
 	return s
 }
 
+// write an X.509 certificate to a .pem or .crt file
+func writeCertFile(cert []byte, path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("error opening pem file for writing: %w", err)
+	}
+	defer f.Close()
+
+	err = pem.Encode(f, &pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: cert,
+	})
+	if err != nil {
+		return fmt.Errorf("error encoding CA to pem: %w", err)
+	}
+
+	log.Printf("created %v", path)
+	return nil
+}
+
 func Main() error {
 	ctx := context.Background()
 	var args struct {
@@ -122,6 +144,18 @@ func Main() error {
 		return fmt.Errorf("error getting current working directory: %w", err)
 	}
 	_ = cwd
+
+	// generate a root CA
+	ca, err := certin.NewCert(nil, certin.Request{CN: "root CA", IsCA: true})
+	if err != nil {
+		return fmt.Errorf("error creating root CA: %w", err)
+	}
+
+	// write the certificate authority to a temporary file
+	err = writeCertFile(ca.Certificate.Raw, "/tmp/ca.crt")
+	if err != nil {
+		return err
+	}
 
 	// lock the OS thread because network and mount namespaces are specific to a single OS thread
 	runtime.LockOSThread()
@@ -207,7 +241,7 @@ func Main() error {
 	}
 	defer mount.Remove()
 
-	// switch user and group id if requested
+	// switch user and group if requested
 	if args.User != "" {
 		u, err := user.Lookup(args.User)
 		if err != nil {
@@ -278,6 +312,9 @@ func Main() error {
 		// udpstack.HandleFunc(":53", func(w udpResponder, p *udpPacket) {
 		// 	proxyUDP(w, p)
 		// })
+
+		// intercept all https connections on port 443
+		go proxyHTTPS(tcpstack.Listen(":443"), ca)
 
 		// start listening for TCP connections and proxy each one to the world
 		go proxyTCP(tcpstack.Listen("*"))

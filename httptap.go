@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/alexflint/go-arg"
 	"github.com/google/gopacket"
@@ -60,75 +61,33 @@ func copyToDevice(ctx context.Context, dst *water.Interface, src chan []byte) er
 	}
 }
 
-// serializeTCP serializes a TCP packet
-func serializeTCP(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte, tmp gopacket.SerializeBuffer) ([]byte, error) {
-	opts := gopacket.SerializeOptions{
-		FixLengths:       true,
-		ComputeChecksums: true,
-	}
-
-	tmp.Clear()
-
-	// each layer is *prepended*, treating the current buffer data as payload
-	p, err := tmp.AppendBytes(len(payload))
-	if err != nil {
-		return nil, fmt.Errorf("error appending TCP payload to packet (%d bytes): %w", len(payload), err)
-	}
-	copy(p, payload)
-
-	err = tcp.SerializeTo(tmp, opts)
-	if err != nil {
-		return nil, fmt.Errorf("error serializing TCP part of packet: %w", err)
-	}
-
-	err = ipv4.SerializeTo(tmp, opts)
-	if err != nil {
-		log.Printf("error serializing IP part of packet: %v", err)
-	}
-
-	return tmp.Bytes(), nil
-}
-
-// serializeUDP serializes a UDP packet
-func serializeUDP(ipv4 *layers.IPv4, udp *layers.UDP, payload []byte, tmp gopacket.SerializeBuffer) ([]byte, error) {
-	opts := gopacket.SerializeOptions{
-		FixLengths:       true,
-		ComputeChecksums: true,
-	}
-
-	tmp.Clear()
-
-	// each layer is *prepended*, treating the current buffer data as payload
-	p, err := tmp.AppendBytes(len(payload))
-	if err != nil {
-		return nil, fmt.Errorf("error appending TCP payload to packet (%d bytes): %w", len(payload), err)
-	}
-	copy(p, payload)
-
-	err = udp.SerializeTo(tmp, opts)
-	if err != nil {
-		return nil, fmt.Errorf("error serializing TCP part of packet: %w", err)
-	}
-
-	err = ipv4.SerializeTo(tmp, opts)
-	if err != nil {
-		log.Printf("error serializing IP part of packet: %v", err)
-	}
-
-	return tmp.Bytes(), nil
-}
-
 // preview returns the first 100 bytes or first line of its input, whichever is shorter
 func preview(b []byte) string {
+	var truncated bool
 	s := string(b)
 	pos := strings.Index(s, "\n")
 	if pos >= 0 {
-		s = s[:pos] + "..."
+		s = s[:pos]
+		truncated = true
 	}
 	if len(s) > 100 {
 		s = s[:100] + "..."
+		truncated = true
 	}
-	return s
+
+	var out strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsPunct(r) {
+			out.WriteRune(r)
+		} else {
+			out.WriteRune('.')
+		}
+	}
+
+	if truncated {
+		out.WriteString("...")
+	}
+	return out.String()
 }
 
 // layernames makes a one-line list of layers in a packet
@@ -138,44 +97,6 @@ func layernames(packet gopacket.Packet) []string {
 		s = append(s, layer.LayerType().String())
 	}
 	return s
-}
-
-func onelineTCP(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte) string {
-	var flags []string
-	if tcp.FIN {
-		flags = append(flags, "FIN")
-	}
-	if tcp.SYN {
-		flags = append(flags, "SYN")
-	}
-	if tcp.RST {
-		flags = append(flags, "RST")
-	}
-	if tcp.ACK {
-		flags = append(flags, "ACK")
-	}
-	if tcp.URG {
-		flags = append(flags, "URG")
-	}
-	if tcp.ECE {
-		flags = append(flags, "ECE")
-	}
-	if tcp.CWR {
-		flags = append(flags, "CWR")
-	}
-	if tcp.NS {
-		flags = append(flags, "NS")
-	}
-	// ignore PSH flag
-
-	flagstr := strings.Join(flags, "+")
-	return fmt.Sprintf("TCP %v:%d => %v:%d %s - Seq %d - Ack %d - Len %d",
-		ipv4.SrcIP, tcp.SrcPort, ipv4.DstIP, tcp.DstPort, flagstr, tcp.Seq, tcp.Ack, len(tcp.Payload))
-}
-
-func onelineUDP(ipv4 *layers.IPv4, udp *layers.UDP, payload []byte) string {
-	return fmt.Sprintf("UDP %v:%d => %v:%d - Len %d",
-		ipv4.SrcIP, udp.SrcPort, ipv4.DstIP, udp.DstPort, len(udp.Payload))
 }
 
 func Main() error {
@@ -306,25 +227,19 @@ func Main() error {
 
 		// there are three (!) user/group IDs for a process: the real, effective, and saved
 		// they have the purpose of allowing the process to go "back" to them
-		// here we set all three of them
+		// here we set just the effective, which, when you are root, sets all three
 
 		err = unix.Setgid(gid)
 		if err != nil {
 			log.Printf("error switching to group %q (gid %v): %v", args.User, gid, err)
 		}
 
-		//err = unix.Setresuid(uid, uid, uid)
 		err = unix.Setuid(uid)
 		if err != nil {
 			log.Printf("error switching to user %q (uid %v): %v", args.User, uid, err)
 		}
 
 		log.Printf("now in uid %d, gid %d", unix.Getuid(), unix.Getgid())
-
-		// err = unix.Setresgid(gid, gid, gid)
-		// if err != nil {
-		// 	log.Printf("error switching to group for user %q (gid %v): %v", args.User, gid, err)
-		// }
 	}
 
 	log.Println("running subcommand now ================")

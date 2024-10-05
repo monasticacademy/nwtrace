@@ -174,3 +174,37 @@ func (s *udpStack) handlePacket(ipv4 *layers.IPv4, udp *layers.UDP, payload []by
 
 	s.notifyHandlers(&w, &udpPacket{ipv4, udp, payload})
 }
+
+// serializeUDP serializes a UDP packet
+func serializeUDP(ipv4 *layers.IPv4, udp *layers.UDP, payload []byte, tmp gopacket.SerializeBuffer) ([]byte, error) {
+	opts := gopacket.SerializeOptions{
+		FixLengths:       true,
+		ComputeChecksums: true,
+	}
+
+	tmp.Clear()
+
+	// each layer is *prepended*, treating the current buffer data as payload
+	p, err := tmp.AppendBytes(len(payload))
+	if err != nil {
+		return nil, fmt.Errorf("error appending TCP payload to packet (%d bytes): %w", len(payload), err)
+	}
+	copy(p, payload)
+
+	err = udp.SerializeTo(tmp, opts)
+	if err != nil {
+		return nil, fmt.Errorf("error serializing TCP part of packet: %w", err)
+	}
+
+	err = ipv4.SerializeTo(tmp, opts)
+	if err != nil {
+		log.Printf("error serializing IP part of packet: %v", err)
+	}
+
+	return tmp.Bytes(), nil
+}
+
+func onelineUDP(ipv4 *layers.IPv4, udp *layers.UDP, payload []byte) string {
+	return fmt.Sprintf("UDP %v:%d => %v:%d - Len %d",
+		ipv4.SrcIP, udp.SrcPort, ipv4.DstIP, udp.DstPort, len(udp.Payload))
+}

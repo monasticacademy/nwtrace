@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -404,4 +405,66 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		// deliver the payload to application-level listeners
 		stream.deliverToApplication(tcp.Payload)
 	}
+}
+
+// serializeTCP serializes a TCP packet
+func serializeTCP(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte, tmp gopacket.SerializeBuffer) ([]byte, error) {
+	opts := gopacket.SerializeOptions{
+		FixLengths:       true,
+		ComputeChecksums: true,
+	}
+
+	tmp.Clear()
+
+	// each layer is *prepended*, treating the current buffer data as payload
+	p, err := tmp.AppendBytes(len(payload))
+	if err != nil {
+		return nil, fmt.Errorf("error appending TCP payload to packet (%d bytes): %w", len(payload), err)
+	}
+	copy(p, payload)
+
+	err = tcp.SerializeTo(tmp, opts)
+	if err != nil {
+		return nil, fmt.Errorf("error serializing TCP part of packet: %w", err)
+	}
+
+	err = ipv4.SerializeTo(tmp, opts)
+	if err != nil {
+		log.Printf("error serializing IP part of packet: %v", err)
+	}
+
+	return tmp.Bytes(), nil
+}
+
+func onelineTCP(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte) string {
+	var flags []string
+	if tcp.FIN {
+		flags = append(flags, "FIN")
+	}
+	if tcp.SYN {
+		flags = append(flags, "SYN")
+	}
+	if tcp.RST {
+		flags = append(flags, "RST")
+	}
+	if tcp.ACK {
+		flags = append(flags, "ACK")
+	}
+	if tcp.URG {
+		flags = append(flags, "URG")
+	}
+	if tcp.ECE {
+		flags = append(flags, "ECE")
+	}
+	if tcp.CWR {
+		flags = append(flags, "CWR")
+	}
+	if tcp.NS {
+		flags = append(flags, "NS")
+	}
+	// ignore PSH flag
+
+	flagstr := strings.Join(flags, "+")
+	return fmt.Sprintf("TCP %v:%d => %v:%d %s - Seq %d - Ack %d - Len %d",
+		ipv4.SrcIP, tcp.SrcPort, ipv4.DstIP, tcp.DstPort, flagstr, tcp.Seq, tcp.Ack, len(tcp.Payload))
 }

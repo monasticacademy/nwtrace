@@ -12,13 +12,13 @@ import (
 
 func Main() error {
 	var args struct {
-		Server string `arg:"positional,required"`
-		Name   string `arg:"positional,required"`
+		Addr string `arg:"positional,required"`
+		Name string `arg:"positional,required"`
 	}
 	arg.MustParse(&args)
 
 	// dial the server
-	conn, err := net.Dial("tcp", args.Server)
+	conn, err := net.Dial("tcp", args.Addr)
 	if err != nil {
 		return fmt.Errorf("error dialing server: %w", err)
 	}

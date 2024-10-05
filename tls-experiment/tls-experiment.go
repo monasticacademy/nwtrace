@@ -1,24 +1,18 @@
 package main
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
-	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
-	"time"
 
+	"github.com/alexflint/go-arg"
 	"github.com/joemiller/certin"
 )
 
@@ -41,13 +35,12 @@ func writeCertFile(cert []byte, path string) error {
 	return nil
 }
 
-func hashKeyId(n *big.Int) []byte {
-	h := sha1.New()
-	h.Write(n.Bytes())
-	return h.Sum(nil)
-}
-
 func Main() error {
+	var args struct {
+		Port string `default:":19870"`
+	}
+	arg.MustParse(&args)
+
 	root, err := certin.NewCert(nil, certin.Request{CN: "root CA", IsCA: true})
 	if err != nil {
 		return fmt.Errorf("error creating root CA: %w", err)
@@ -74,11 +67,16 @@ func Main() error {
 	}
 
 	// start an HTTP server
+	const plaintext = "hello httptap world"
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "success!")
+		fmt.Fprintln(w, plaintext)
 	}))
 	server.TLS = &tls.Config{
 		Certificates: []tls.Certificate{leaf.TLSCertificate()},
+	}
+	server.Listener, err = net.Listen("tcp", args.Port)
+	if err != nil {
+		return fmt.Errorf("unable to listen on %v: %w", args.Port, err)
 	}
 
 	server.StartTLS()
@@ -93,7 +91,9 @@ func Main() error {
 	http := http.Client{
 		Transport: transport,
 	}
-	resp, err := http.Get(server.URL)
+
+	url := fmt.Sprintf("https://127.0.0.1%v/", args.Port)
+	resp, err := http.Get(url)
 	if err != nil {
 		return err
 	}
@@ -104,142 +104,7 @@ func Main() error {
 		return err
 	}
 	body := strings.TrimSpace(string(respBodyBytes[:]))
-	if body != "success!" {
-		return fmt.Errorf("mismatch, got: %q", body)
-	}
-
-	log.Printf("verified connection works locally, now listening at %v ...", server.URL)
-	select {}
-}
-
-func OldMain() error {
-	// generate our private and public key
-	caPrivKey, err := rsa.GenerateKey(rand.Reader, 4096)
-	if err != nil {
-		return err
-	}
-
-	// create a CA template for the call to CreateCertificate below -- note that this is not a valid
-	// x509 certificate until it is signed with the key generated below, inside x509.CreateCertificate
-	caTemplate := &x509.Certificate{
-		SerialNumber: big.NewInt(2019),
-		Subject: pkix.Name{
-			Organization:  []string{"Center for Certificate Authorities"},
-			Country:       []string{"US"},
-			Province:      []string{""},
-			Locality:      []string{"San Diego"},
-			StreetAddress: []string{"1 Page Rd"},
-			PostalCode:    []string{"90210"},
-		},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().AddDate(10, 0, 0),
-		IsCA:                  true,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-		BasicConstraintsValid: true,
-	}
-
-	// create and serialize a certificate from the template
-	caBytes, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caPrivKey.PublicKey, caPrivKey)
-	if err != nil {
-		return err
-	}
-
-	// parse the bytes to gives us an actual CA
-	ca, err := x509.ParseCertificate(caBytes)
-	if err != nil {
-		return fmt.Errorf("error parsing serialized certificate: %w", err)
-	}
-
-	// generate a key for the certificate
-	certPrivKey, err := rsa.GenerateKey(rand.Reader, 4096)
-	if err != nil {
-		return err
-	}
-
-	// create a certificate template for the call to CreateCertificate below -- note that this is not a valid
-	// x509 certificate until it is signed with the key generated below, inside x509.CreateCertificate
-	certTemplate := &x509.Certificate{
-		SerialNumber: big.NewInt(2019),
-		Subject: pkix.Name{
-			Organization:  []string{"Center for Certificate Authorities"},
-			Country:       []string{"US"},
-			Province:      []string{""},
-			Locality:      []string{"San Diego"},
-			StreetAddress: []string{"1 Page Rd"},
-			PostalCode:    []string{"90210"},
-		},
-		DNSNames:       []string{"example.com"},
-		IPAddresses:    []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
-		NotBefore:      time.Now(),
-		NotAfter:       time.Now().AddDate(10, 0, 0),
-		SubjectKeyId:   hashKeyId(certPrivKey.N), //		[]byte{1, 2, 3, 4, 6},
-		AuthorityKeyId: hashKeyId(caPrivKey.N),
-		ExtKeyUsage:    []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		KeyUsage:       x509.KeyUsageDigitalSignature,
-	}
-
-	// create the certificate with the CA as the parent
-	certBytes, err := x509.CreateCertificate(rand.Reader, certTemplate, ca, &certPrivKey.PublicKey, caPrivKey)
-	if err != nil {
-		return err
-	}
-
-	// caPrivKeyPEM := new(bytes.Buffer)
-	// pem.Encode(caPrivKeyPEM, &pem.Block{
-	// 	Type:  "RSA PRIVATE KEY",
-	// 	Bytes: x509.MarshalPKCS1PrivateKey(caPrivKey),
-	// })
-
-	// write the certificate authority to a temporary file
-	err = writeCertFile(caBytes, "ca.crt")
-	if err != nil {
-		return err
-	}
-
-	// write the server certificate to a temporary file
-	err = writeCertFile(certBytes, "certificate.crt")
-	if err != nil {
-		return err
-	}
-
-	// start an HTTP server
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "success!")
-	}))
-	server.TLS = &tls.Config{
-		Certificates: []tls.Certificate{{
-			Certificate: [][]byte{certBytes},
-			PrivateKey:  certPrivKey,
-		}},
-	}
-
-	server.StartTLS()
-	defer server.Close()
-
-	// communicate with the server using an http.Client configured to trust our CA
-	certpool := x509.NewCertPool()
-	certpool.AddCert(ca)
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			RootCAs: certpool,
-		},
-	}
-	http := http.Client{
-		Transport: transport,
-	}
-	resp, err := http.Get(server.URL)
-	if err != nil {
-		return err
-	}
-
-	// verify the response
-	respBodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	body := strings.TrimSpace(string(respBodyBytes[:]))
-	if body != "success!" {
+	if body != plaintext {
 		return fmt.Errorf("mismatch, got: %q", body)
 	}
 
@@ -255,5 +120,3 @@ func main() {
 		log.Fatal(err)
 	}
 }
-
-// use SSL_CERT_FILE

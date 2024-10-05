@@ -23,35 +23,8 @@ func proxyTCP(l *tcpListener) error {
 }
 
 // proxyTCPConn proxies data received on one TCP connection to the world, and back the other way.
-func proxyTCPConn(s *stream) {
+func proxyTCPConn(s *tcpStream) {
 	conn, err := net.Dial("tcp", s.world.String())
-	if err != nil {
-		log.Printf("service loop exited with error: %v", err)
-		return
-	}
-
-	go proxyWorldToSubprocess(s.toSubprocess, conn)
-	go proxySubprocessToWorld(conn, s.fromSubprocess)
-}
-
-// proxyUDP accepts connections on the given listener. For each one it dials the outside world
-// and proxies data back and forth. It blocks until the listener returns an error, which only
-// happens when the UDP stack shuts down.
-func proxyUDP(l *udpListener) error {
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			return fmt.Errorf("listener.Accept returned with error: %w", err)
-		}
-
-		// dial will take a while to complete; do not block on next accept
-		go proxyUDPConn(conn)
-	}
-}
-
-// proxyUDPConn proxies data received on one UDP connection to the world, and back the other way.
-func proxyUDPConn(s *stream) {
-	conn, err := net.Dial("udp", s.world.String())
 	if err != nil {
 		log.Printf("service loop exited with error: %v", err)
 		return

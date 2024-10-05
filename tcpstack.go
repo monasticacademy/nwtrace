@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -11,10 +12,64 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
+// TCP stream
+
+type TCPState int
+
+const (
+	StateInit TCPState = iota + 1
+	StateSynchronizing
+	StateConnected
+	StateFinished
+)
+
+type tcpStream struct {
+	protocol       string // can be "tcp" or "udp"
+	world          AddrPort
+	fromSubprocess chan []byte // from the subprocess to the world
+	toSubprocess   io.Writer   // application-level payloads are written here, and IP packets get sent
+
+	subprocess   AddrPort
+	serializeBuf gopacket.SerializeBuffer
+
+	// tcp-specific things (TODO: factor out)
+	state TCPState
+	seq   uint32 // sequence number for packets going to the subprocess
+	ack   uint32 // the next acknowledgement number to send
+}
+
+func newTCPStream(protool string, world AddrPort, subprocess AddrPort) *tcpStream {
+	stream := tcpStream{
+		protocol:       protool,
+		world:          world,
+		subprocess:     subprocess,
+		state:          StateInit,
+		fromSubprocess: make(chan []byte, 1024),
+		serializeBuf:   gopacket.NewSerializeBuffer(),
+	}
+
+	return &stream
+}
+
+func (s *tcpStream) deliverToApplication(payload []byte) {
+	// copy the payload because it may be overwritten before the write loop gets to it
+	cp := make([]byte, len(payload))
+	copy(cp, payload)
+
+	log.Printf("stream enqueing %d bytes to send to world", len(payload))
+
+	// send to channel unless it would block
+	select {
+	case s.fromSubprocess <- cp:
+	default:
+		log.Printf("channel to world would block, dropping %d bytes", len(payload))
+	}
+}
+
 // TCP stack
 
 type tcpStack struct {
-	streamsBySrcDst map[string]*stream
+	streamsBySrcDst map[string]*tcpStream
 	toSubprocess    chan []byte // data sent to this channel goes to subprocess as raw IPv4 packet
 
 	listenerMu sync.Mutex
@@ -23,7 +78,7 @@ type tcpStack struct {
 
 func newTCPStack(toSubprocess chan []byte) *tcpStack {
 	return &tcpStack{
-		streamsBySrcDst: make(map[string]*stream),
+		streamsBySrcDst: make(map[string]*tcpStream),
 		toSubprocess:    toSubprocess,
 	}
 }
@@ -41,14 +96,14 @@ func (s *tcpStack) Listen(pattern string) *tcpListener {
 	s.listenerMu.Lock()
 	defer s.listenerMu.Unlock()
 
-	listener := tcpListener{pattern: pattern, connections: make(chan *stream, 64)}
+	listener := tcpListener{pattern: pattern, connections: make(chan *tcpStream, 64)}
 	s.listeners = append(s.listeners, &listener)
 	return &listener
 }
 
 // notifyListeners is called when a new stream is created. It finds the first listener
 // that will accept the given stream. It never blocks.
-func (s *tcpStack) notifyListeners(stream *stream) {
+func (s *tcpStack) notifyListeners(stream *tcpStream) {
 	s.listenerMu.Lock()
 	defer s.listenerMu.Unlock()
 
@@ -74,7 +129,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 	if !found {
 		// create a new stream no matter what kind of packet this is
 		// later we will reject everything other than SYN packets sent to a fresh stream
-		stream = newStream("tcp", dst, src)
+		stream = newTCPStream("tcp", dst, src)
 
 		// define the function that wraps payloads in TCP and IP headers
 		stream.toSubprocess = &tcpWriter{
@@ -217,11 +272,11 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 // tcpListener is the interface for the application to intercept TCP connections
 type tcpListener struct {
 	pattern     string
-	connections chan *stream // the tcpStack sends streams here when they are created and they match the pattern above
+	connections chan *tcpStream // the tcpStack sends streams here when they are created and they match the pattern above
 }
 
 // Accept accepts an intercepted connection. Later this will implement net.Listener.Accept
-func (l *tcpListener) Accept() (*stream, error) {
+func (l *tcpListener) Accept() (*tcpStream, error) {
 	stream := <-l.connections
 	if stream == nil {
 		// this means the channel is closed, which means the tcpStack was shut down
@@ -239,7 +294,7 @@ type tcpWriter struct {
 	theirPort layers.TCPPort           // port that other side (the subprocess) considers to be theirs
 	out       chan []byte              // we send raw IP packets to this channel in order to transmit
 	buf       gopacket.SerializeBuffer // buffer used to serialize packets
-	stream    *stream
+	stream    *tcpStream
 }
 
 func (w *tcpWriter) Write(payload []byte) (int, error) {

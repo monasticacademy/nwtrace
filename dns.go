@@ -10,30 +10,6 @@ import (
 	"github.com/miekg/dns"
 )
 
-// serviceDNS accepts incoming DNS requests and replies with results from net.Resolve
-func serviceDNS(l *udpListener) {
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			log.Printf("listener.Accept returned with error: %v", err)
-			return
-		}
-
-		log.Printf("intercepted a DNS query meant for %v", conn.world)
-
-		// handleDNS will take a while to complete so launch it in a goroutine
-		go func() {
-			// even though UDP packet are not really grouped into any true "stream", the
-			// UDP stack still groups them by source and destination endpoint, and so when
-			// we "accept" a UDP connection, we get a sequence of packets that never
-			// terminates
-			for packet := range conn.fromSubprocess {
-				handleDNS(context.Background(), conn.toSubprocess, packet)
-			}
-		}()
-	}
-}
-
 // handle a DNS query payload here is the application-level UDP payload
 func handleDNS(ctx context.Context, w io.Writer, payload []byte) {
 	var req dns.Msg

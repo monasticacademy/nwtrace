@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -34,58 +33,6 @@ type AddrPort struct {
 
 func (ap AddrPort) String() string {
 	return ap.Addr.String() + ":" + strconv.Itoa(int(ap.Port))
-}
-
-type TCPState int
-
-const (
-	StateInit TCPState = iota + 1
-	StateSynchronizing
-	StateConnected
-	StateFinished
-)
-
-type stream struct {
-	protocol       string // can be "tcp" or "udp"
-	world          AddrPort
-	fromSubprocess chan []byte // from the subprocess to the world
-	toSubprocess   io.Writer   // application-level payloads are written here, and IP packets get sent
-
-	subprocess   AddrPort
-	serializeBuf gopacket.SerializeBuffer
-
-	// tcp-specific things (TODO: factor out)
-	state TCPState
-	seq   uint32 // sequence number for packets going to the subprocess
-	ack   uint32 // the next acknowledgement number to send
-}
-
-func newStream(protool string, world AddrPort, subprocess AddrPort) *stream {
-	stream := stream{
-		protocol:       protool,
-		world:          world,
-		subprocess:     subprocess,
-		state:          StateInit,
-		fromSubprocess: make(chan []byte, 1024),
-		serializeBuf:   gopacket.NewSerializeBuffer(),
-	}
-
-	return &stream
-}
-
-func (s *stream) deliverToApplication(payload []byte) {
-	// copy the payload because it may be overwritten before the write loop gets to it
-	cp := make([]byte, len(payload))
-	copy(cp, payload)
-
-	log.Printf("stream enqueing %d bytes to send to world", len(payload))
-
-	// send to channel unless it would block
-	select {
-	case s.fromSubprocess <- cp:
-	default:
-		log.Printf("channel to world would block, dropping %d bytes", len(payload))
-	}
 }
 
 // copyToDevice copies packets from a channel to a tun device
@@ -407,14 +354,18 @@ func Main() error {
 		tcpstack := newTCPStack(toSubprocess)
 		udpstack := newUDPStack(toSubprocess)
 
-		// start listening for DNS connections and service each one by calling net.Resolve
-		go serviceDNS(udpstack.Listen(":53"))
+		// handle DNS queries by calling net.Resolve
+		udpstack.HandleFunc(":53", func(w udpResponder, p *udpPacket) {
+			handleDNS(context.Background(), w, p.payload)
+		})
+
+		// TODO: proxy all other DNS queries to the public internet
+		// udpstack.HandleFunc(":53", func(w udpResponder, p *udpPacket) {
+		// 	proxyUDP(w, p)
+		// })
 
 		// start listening for TCP connections and proxy each one to the world
 		go proxyTCP(tcpstack.Listen("*"))
-
-		// start listening for UDP connections and proxy each one to the world
-		go proxyUDP(udpstack.Listen("*"))
 
 		// start reading raw bytes from the tunnel device and sending them to the appropriate stack
 		buf := make([]byte, 1500)

@@ -73,6 +73,16 @@ func Main() error {
 	}))
 	server.TLS = &tls.Config{
 		Certificates: []tls.Certificate{leaf.TLSCertificate()},
+		// GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		// 	log.Printf("got challenge for servername %q", hello.ServerName)
+		// 	onthefly, err := certin.NewCert(root, certin.Request{CN: hello.ServerName})
+		// 	if err != nil {
+		// 		log.Println("error creating cert: %w", err)
+		// 		return nil, fmt.Errorf("error creating on-the-fly certificate for %q: %w", hello.ServerName, err)
+		// 	}
+		// 	tlscert := onthefly.TLSCertificate()
+		// 	return &tlscert, nil
+		// },
 	}
 	server.Listener, err = net.Listen("tcp", args.Port)
 	if err != nil {

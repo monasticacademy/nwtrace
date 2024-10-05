@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -30,13 +31,27 @@ type tcpListener struct {
 }
 
 // Accept accepts an intercepted connection. Later this will implement net.Listener.Accept
-func (l *tcpListener) Accept() (*tcpStream, error) {
+func (l *tcpListener) Accept() (net.Conn, error) {
 	stream := <-l.connections
 	if stream == nil {
 		// this means the channel is closed, which means the tcpStack was shut down
 		return nil, net.ErrClosed
 	}
 	return stream, nil
+}
+
+// for net.Listener interface
+func (l *tcpListener) Close() error {
+	// TODO: unregister from the stack, then close(l.connections)
+	log.Println("tcpListener.Close() not implemented, ignoring")
+	return nil
+}
+
+// for net.Listener interface, returns our side of the connection
+func (l *tcpListener) Addr() net.Addr {
+	log.Println("tcpListener.Addr() was called, returning bogus address 0.0.0.0:0")
+	// in truth we do not have a real address -- we listen for anything going anywhere
+	return &net.TCPAddr{IP: net.IPv4(0, 0, 0, 0), Port: 0}
 }
 
 // TCP stream
@@ -60,6 +75,37 @@ func newTCPStream(world AddrPort, subprocess AddrPort, out chan []byte) *tcpStre
 		fromSubprocess: make(chan []byte, 1024),
 		toSubprocess:   out,
 		serializeBuf:   gopacket.NewSerializeBuffer(),
+	}
+}
+
+// for net.Conn interface
+func (s *tcpStream) SetDeadline(t time.Time) error {
+	panic("SetDeadline not implemented for TCP streams")
+}
+
+// for net.Conn interface
+func (s *tcpStream) SetReadDeadline(t time.Time) error {
+	panic("SetReadDeadline not implemented for TCP streams")
+}
+
+// for net.Conn interface
+func (s *tcpStream) SetWriteDeadline(t time.Time) error {
+	panic("SetWriteDeadline not implemented for TCP streams")
+}
+
+// for net.Conn interface
+func (s *tcpStream) LocalAddr() net.Addr {
+	return &net.TCPAddr{
+		IP:   s.world.Addr,
+		Port: int(s.world.Port),
+	}
+}
+
+// for net.Conn interface
+func (s *tcpStream) RemoteAddr() net.Addr {
+	return &net.TCPAddr{
+		IP:   s.subprocess.Addr,
+		Port: int(s.subprocess.Port),
 	}
 }
 
@@ -135,6 +181,13 @@ func (s *tcpStream) Write(payload []byte) (int, error) {
 	return len(payload), nil
 }
 
+// Close the connection by sending a FIN packet
+func (s *tcpStream) Close() error {
+	// TODO
+	log.Println("tcp stream closed, would send a FIN packet here")
+	return nil
+}
+
 func (s *tcpStream) deliverToApplication(payload []byte) {
 	// copy the payload because it may be overwritten before the write loop gets to it
 	cp := make([]byte, len(payload))
@@ -176,7 +229,7 @@ func newTCPStack(toSubprocess chan []byte) *tcpStack {
 //   - "*"
 //
 // Later this will be like net.Listen
-func (s *tcpStack) Listen(pattern string) *tcpListener {
+func (s *tcpStack) Listen(pattern string) net.Listener {
 	s.listenerMu.Lock()
 	defer s.listenerMu.Unlock()
 

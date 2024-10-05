@@ -46,13 +46,13 @@ func Main() error {
 		return fmt.Errorf("error creating root CA: %w", err)
 	}
 
-	leaf, err := certin.NewCert(root, certin.Request{
-		CN:   "example.com",
-		SANs: []string{"example.com", "www.example.com", "127.0.0.1"},
-	})
-	if err != nil {
-		return fmt.Errorf("error creating leaf certificate: %w", err)
-	}
+	// leaf, err := certin.NewCert(root, certin.Request{
+	// 	CN:   "example.com",
+	// 	SANs: []string{"example.com", "www.example.com", "127.0.0.1"},
+	// })
+	// if err != nil {
+	// 	return fmt.Errorf("error creating leaf certificate: %w", err)
+	// }
 
 	// write the certificate authority to a temporary file
 	err = writeCertFile(root.Certificate.Raw, "ca.crt")
@@ -61,10 +61,10 @@ func Main() error {
 	}
 
 	// write the server certificate to a temporary file
-	err = writeCertFile(leaf.Certificate.Raw, "certificate.crt")
-	if err != nil {
-		return err
-	}
+	// err = writeCertFile(leaf.Certificate.Raw, "certificate.crt")
+	// if err != nil {
+	// 	return err
+	// }
 
 	// start an HTTP server
 	const plaintext = "hello httptap world"
@@ -72,17 +72,22 @@ func Main() error {
 		fmt.Fprintln(w, plaintext)
 	}))
 	server.TLS = &tls.Config{
-		Certificates: []tls.Certificate{leaf.TLSCertificate()},
-		// GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-		// 	log.Printf("got challenge for servername %q", hello.ServerName)
-		// 	onthefly, err := certin.NewCert(root, certin.Request{CN: hello.ServerName})
-		// 	if err != nil {
-		// 		log.Println("error creating cert: %w", err)
-		// 		return nil, fmt.Errorf("error creating on-the-fly certificate for %q: %w", hello.ServerName, err)
-		// 	}
-		// 	tlscert := onthefly.TLSCertificate()
-		// 	return &tlscert, nil
-		// },
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			log.Printf("got challenge for %q", hello.ServerName)
+			onthefly, err := certin.NewCert(root, certin.Request{CN: hello.ServerName})
+			if err != nil {
+				log.Println("error creating cert: %w", err)
+				return nil, fmt.Errorf("error creating on-the-fly certificate for %q: %w", hello.ServerName, err)
+			}
+
+			err = writeCertFile(onthefly.Certificate.Raw, "certificate.crt")
+			if err != nil {
+				log.Printf("error writing on-the-fly certificate to file: %v, ignoring", err)
+			}
+
+			tlscert := onthefly.TLSCertificate()
+			return &tlscert, nil
+		},
 	}
 	server.Listener, err = net.Listen("tcp", args.Port)
 	if err != nil {
@@ -95,7 +100,8 @@ func Main() error {
 	// communicate with the server using an http.Client configured to trust our CA
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
-			RootCAs: root.CertPool(),
+			RootCAs:    root.CertPool(),
+			ServerName: "example.com",
 		},
 	}
 	http := http.Client{

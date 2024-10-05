@@ -7,10 +7,10 @@ showcerts:
 	openssl s_client -connect 127.0.0.1:$(PORT) -servername example.com -showcerts
 
 test-with-curl:
-	CURL_CA_BUNDLE=ca.crt curl --connect-to example.com:443:localhost:$(PORT) https://example.com
+	CURL_CA_BUNDLE=ca.crt curl --connect-to arbitrary.xyz:443:localhost:$(PORT) https://arbitrary.xyz
 
 test-with-python:
 	REQUESTS_CA_BUNDLE=ca.crt python get.py $(PORT)
 
 test-with-go:
-	SSL_CERT_FILE=ca.crt go run ./get 127.0.0.1:$(PORT) example.com
+	SSL_CERT_FILE=ca.crt go run ./get 127.0.0.1:$(PORT) couldbeanything.net

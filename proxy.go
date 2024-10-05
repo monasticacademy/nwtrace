@@ -30,8 +30,8 @@ func proxyTCPConn(s *tcpStream) {
 		return
 	}
 
-	go proxyWorldToSubprocess(s.toSubprocess, conn)
-	go proxySubprocessToWorld(conn, s.fromSubprocess)
+	go proxyWorldToSubprocess(s, conn)
+	go proxySubprocessToWorld(conn, s)
 }
 
 // proxyWorldToSubprocess copies packets received from the world to the subprocess
@@ -58,13 +58,23 @@ func proxyWorldToSubprocess(toSubprocess io.Writer, fromWorld net.Conn) {
 }
 
 // proxyWorldToSubprocess copies packets received from the subprocess to the world
-func proxySubprocessToWorld(toWorld net.Conn, fromSubprocess chan []byte) {
-	for packet := range fromSubprocess {
-		log.Printf("stream writing %d bytes (%q) to world connection", len(packet), preview(packet))
-		_, err := toWorld.Write(packet)
+func proxySubprocessToWorld(toWorld net.Conn, fromSubprocess io.Reader) {
+	buf := make([]byte, 1<<20)
+	for {
+		n, err := fromSubprocess.Read(buf)
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			log.Printf("failed to read from subprocess in proxy: %v, abandoning", err)
+			return
+		}
+
+		log.Printf("stream writing %d bytes (%q) to world connection", n, preview(buf[:n]))
+		_, err = toWorld.Write(buf[:n])
 		if err != nil {
 			// how to indicate to outside world that the write failed?
-			log.Printf("failed to write %d bytes from subprocess to world: %v", len(packet), err)
+			log.Printf("failed to write %d bytes from subprocess to world: %v", n, err)
 			return
 		}
 	}

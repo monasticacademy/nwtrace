@@ -22,11 +22,14 @@ func serviceDNS(l *udpListener) {
 		log.Printf("intercepted a DNS query meant for %v", conn.world)
 
 		// handleDNS will take a while to complete so launch it in a goroutine
-		// do not reduce the below to "go handleDNS(...)" because that would block
-		// this loop on the chan read "<-conn.fromSubprocess"
 		go func() {
-			// the channel read below will block until the first packet arrives
-			handleDNS(context.Background(), conn.toSubprocess, <-conn.fromSubprocess)
+			// even though UDP packet are not really grouped into any true "stream", the
+			// UDP stack still groups them by source and destination endpoint, and so when
+			// we "accept" a UDP connection, we get a sequence of packets that never
+			// terminates
+			for packet := range conn.fromSubprocess {
+				handleDNS(context.Background(), conn.toSubprocess, packet)
+			}
 		}()
 	}
 }

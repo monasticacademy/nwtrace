@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net"
 
 	"github.com/miekg/dns"
@@ -15,19 +14,19 @@ func handleDNS(ctx context.Context, w io.Writer, payload []byte) {
 	var req dns.Msg
 	err := req.Unpack(payload)
 	if err != nil {
-		log.Printf("error unpacking dns packet: %v, ignoring", err)
+		verbosef("error unpacking dns packet: %v, ignoring", err)
 		return
 	}
 
 	if req.Opcode != dns.OpcodeQuery {
-		log.Printf("ignoring a dns query with non-query opcode (%v)", req.Opcode)
+		verbosef("ignoring a dns query with non-query opcode (%v)", req.Opcode)
 		return
 	}
 
 	// resolve the query
 	rrs, err := handleDNSQuery(ctx, &req)
 	if err != nil {
-		log.Printf("dns failed for %v with error: %v, sending a response with empty answer", req, err.Error())
+		verbosef("dns failed for %v with error: %v, sending a response with empty answer", req, err.Error())
 		// do not abort here, continue on and send a reply with no answer
 		// because the client might easily have tried to resolve a non-existent
 		// hostname
@@ -40,14 +39,14 @@ func handleDNS(ctx context.Context, w io.Writer, payload []byte) {
 	// serialize the response
 	buf, err := resp.Pack()
 	if err != nil {
-		log.Printf("error serializing dns response: %v, abandoning...", err)
+		verbosef("error serializing dns response: %v, abandoning...", err)
 		return
 	}
 
 	// always send the entire buffer in a single Write() since UDP writes one packet per call to Write()
 	_, err = w.Write(buf)
 	if err != nil {
-		log.Printf("error writing dns response: %v, abandoning...", err)
+		verbosef("error writing dns response: %v, abandoning...", err)
 		return
 	}
 }
@@ -61,7 +60,7 @@ func handleDNSQuery(ctx context.Context, req *dns.Msg) ([]dns.RR, error) {
 	}
 
 	question := req.Question[0]
-	log.Printf("got dns request for %v", question.Name)
+	verbosef("got dns request for %v", question.Name)
 
 	// handle the request ourselves
 	switch question.Qtype {
@@ -83,7 +82,7 @@ func handleDNSQuery(ctx context.Context, req *dns.Msg) ([]dns.RR, error) {
 		return rrs, nil
 	}
 
-	log.Println("proxying the request...")
+	verbose("proxying the request...")
 
 	// proxy the request to another server
 	request := new(dns.Msg)
@@ -97,7 +96,7 @@ func handleDNSQuery(ctx context.Context, req *dns.Msg) ([]dns.RR, error) {
 		return nil, err
 	}
 
-	log.Printf("got answer from upstream dns server with %d answers", len(response.Answer))
+	verbosef("got answer from upstream dns server with %d answers", len(response.Answer))
 
 	if len(response.Answer) > 0 {
 		return response.Answer, nil

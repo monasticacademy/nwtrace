@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"strings"
 	"sync"
@@ -44,13 +43,13 @@ func (l *tcpListener) Accept() (net.Conn, error) {
 // for net.Listener interface
 func (l *tcpListener) Close() error {
 	// TODO: unregister from the stack, then close(l.connections)
-	log.Println("tcpListener.Close() not implemented, ignoring")
+	verbose("tcpListener.Close() not implemented, ignoring")
 	return nil
 }
 
 // for net.Listener interface, returns our side of the connection
 func (l *tcpListener) Addr() net.Addr {
-	log.Println("tcpListener.Addr() was called, returning bogus address 0.0.0.0:0")
+	verbose("tcpListener.Addr() was called, returning bogus address 0.0.0.0:0")
 	// in truth we do not have a real address -- we listen for anything going anywhere
 	return &net.TCPAddr{IP: net.IPv4(0, 0, 0, 0), Port: 0}
 }
@@ -159,7 +158,7 @@ func (s *tcpStream) Write(payload []byte) (int, error) {
 	}
 
 	// log
-	log.Printf("sending tcp packet to subprocess: %s", onelineTCP(&replyipv4, &replytcp, payload))
+	verbosef("sending tcp packet to subprocess: %s", onelineTCP(&replyipv4, &replytcp, payload))
 
 	// serialize the data
 	packet, err := serializeTCP(&replyipv4, &replytcp, payload, s.serializeBuf)
@@ -185,7 +184,7 @@ func (s *tcpStream) Write(payload []byte) (int, error) {
 // Close the connection by sending a FIN packet
 func (s *tcpStream) Close() error {
 	// TODO
-	log.Println("tcp stream closed, would send a FIN packet here")
+	verbose("tcp stream closed, would send a FIN packet here")
 	return nil
 }
 
@@ -194,13 +193,13 @@ func (s *tcpStream) deliverToApplication(payload []byte) {
 	cp := make([]byte, len(payload))
 	copy(cp, payload)
 
-	log.Printf("stream enqueing %d bytes to send to world", len(payload))
+	verbosef("stream enqueing %d bytes to send to world", len(payload))
 
 	// send to channel unless it would block
 	select {
 	case s.fromSubprocess <- cp:
 	default:
-		log.Printf("channel to world would block, dropping %d bytes", len(payload))
+		verbosef("channel to world would block, dropping %d bytes", len(payload))
 	}
 }
 
@@ -252,7 +251,7 @@ func (s *tcpStack) notifyListeners(stream *tcpStream) {
 		}
 	}
 
-	log.Printf("nobody listening for tcp to %v, dropping!", stream.world)
+	verbosef("nobody listening for tcp to %v, dropping!", stream.world)
 }
 
 func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte) {
@@ -290,7 +289,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		stream.state = StateSynchronizing
 		seq := atomic.AddUint32(&stream.seq, 1) - 1
 		atomic.StoreUint32(&stream.ack, tcp.Seq+1)
-		log.Printf("got SYN to %v:%v, now state is %v", ipv4.DstIP, tcp.DstPort, stream.state)
+		verbosef("got SYN to %v:%v, now state is %v", ipv4.DstIP, tcp.DstPort, stream.state)
 
 		// reply to the subprocess as if the connection were already good to go
 		replytcp := layers.TCP{
@@ -314,12 +313,12 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		replytcp.SetNetworkLayerForChecksum(&replyipv4)
 
 		// log
-		log.Printf("sending SYN+ACK to subprocess: %s", onelineTCP(&replyipv4, &replytcp, nil))
+		verbosef("sending SYN+ACK to subprocess: %s", onelineTCP(&replyipv4, &replytcp, nil))
 
 		// serialize the packet
 		serialized, err := serializeTCP(&replyipv4, &replytcp, nil, stream.serializeBuf)
 		if err != nil {
-			log.Printf("error serializing reply TCP: %v, dropping", err)
+			verbosef("error serializing reply TCP: %v, dropping", err)
 			return
 		}
 
@@ -331,7 +330,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		select {
 		case s.toSubprocess <- cp:
 		default:
-			log.Printf("channel for sending to subprocess would have blocked, dropping %d bytes", len(cp))
+			verbosef("channel for sending to subprocess would have blocked, dropping %d bytes", len(cp))
 		}
 	}
 
@@ -342,7 +341,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		stream.state = StateFinished
 		seq := atomic.AddUint32(&stream.seq, 1) - 1
 		atomic.StoreUint32(&stream.ack, tcp.Seq+1)
-		log.Printf("got FIN to %v:%v, now state is %v", ipv4.DstIP, tcp.DstPort, stream.state)
+		verbosef("got FIN to %v:%v, now state is %v", ipv4.DstIP, tcp.DstPort, stream.state)
 
 		// make a FIN+ACK reply to send to the subprocess
 		replytcp := layers.TCP{
@@ -366,12 +365,12 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		replytcp.SetNetworkLayerForChecksum(&replyipv4)
 
 		// log
-		log.Printf("sending FIN+ACK to subprocess: %s", onelineTCP(&replyipv4, &replytcp, nil))
+		verbosef("sending FIN+ACK to subprocess: %s", onelineTCP(&replyipv4, &replytcp, nil))
 
 		// serialize the packet
 		serialized, err := serializeTCP(&replyipv4, &replytcp, nil, stream.serializeBuf)
 		if err != nil {
-			log.Printf("error serializing reply TCP: %v, dropping", err)
+			verbosef("error serializing reply TCP: %v, dropping", err)
 			return
 		}
 
@@ -383,13 +382,13 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		select {
 		case s.toSubprocess <- cp:
 		default:
-			log.Printf("channel for sending to subprocess would have blocked, dropping %d bytes", len(cp))
+			verbosef("channel for sending to subprocess would have blocked, dropping %d bytes", len(cp))
 		}
 	}
 
 	if tcp.ACK && stream.state == StateSynchronizing {
 		stream.state = StateConnected
-		log.Printf("got ACK to %v:%v, now state is %v", ipv4.DstIP, tcp.DstPort, stream.state)
+		verbosef("got ACK to %v:%v, now state is %v", ipv4.DstIP, tcp.DstPort, stream.state)
 
 		// nothing more to do here -- if there is a payload then it will be forwarded
 		// to the subprocess in the block below
@@ -397,7 +396,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 
 	// payload packets will often have ACK set, which acknowledges previously sent bytes
 	if !tcp.SYN && len(tcp.Payload) > 0 && stream.state == StateConnected {
-		log.Printf("got %d tcp bytes to %v:%v, forwarding to application", len(tcp.Payload), ipv4.DstIP, tcp.DstPort)
+		verbosef("got %d tcp bytes to %v:%v, forwarding to application", len(tcp.Payload), ipv4.DstIP, tcp.DstPort)
 
 		// update TCP sequence number -- this is not an increment but an overwrite, so no race condition here
 		atomic.StoreUint32(&stream.ack, tcp.Seq+uint32(len(tcp.Payload)))
@@ -430,7 +429,7 @@ func serializeTCP(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte, tmp gopack
 
 	err = ipv4.SerializeTo(tmp, opts)
 	if err != nil {
-		log.Printf("error serializing IP part of packet: %v", err)
+		verbosef("error serializing IP part of packet: %v", err)
 	}
 
 	return tmp.Bytes(), nil

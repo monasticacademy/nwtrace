@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"sync"
 
@@ -60,7 +59,7 @@ func (s *udpStack) notifyHandlers(w udpResponder, packet *udpPacket) {
 		}
 	}
 
-	log.Printf("nobody listening for udp to %v:%v, dropping!", packet.ipv4header.DstIP, packet.udpheader.DstPort)
+	verbosef("nobody listening for udp to %v:%v, dropping!", packet.ipv4header.DstIP, packet.udpheader.DstPort)
 }
 
 // udpResponder is the interface for writing back UDP packets
@@ -108,7 +107,7 @@ func (r *udpStackResponder) Write(payload []byte) (int, error) {
 	r.udpheader.SetNetworkLayerForChecksum(r.ipv4header)
 
 	// log
-	log.Printf("sending udp packet to subprocess: %s", onelineUDP(r.ipv4header, r.udpheader, payload))
+	verbosef("sending udp packet to subprocess: %s", onelineUDP(r.ipv4header, r.udpheader, payload))
 
 	// serialize the data
 	packet, err := serializeUDP(r.ipv4header, r.udpheader, payload, r.stack.buf)
@@ -169,7 +168,7 @@ func (s *udpStack) handlePacket(ipv4 *layers.IPv4, udp *layers.UDP, payload []by
 	}
 
 	// forward the data to application-level listeners
-	log.Printf("got %d udp bytes to %v:%v, delivering to application", len(udp.Payload), ipv4.DstIP, udp.DstPort)
+	verbosef("got %d udp bytes to %v:%v, delivering to application", len(udp.Payload), ipv4.DstIP, udp.DstPort)
 
 	s.notifyHandlers(&w, &udpPacket{ipv4, udp, payload})
 }
@@ -197,7 +196,7 @@ func serializeUDP(ipv4 *layers.IPv4, udp *layers.UDP, payload []byte, tmp gopack
 
 	err = ipv4.SerializeTo(tmp, opts)
 	if err != nil {
-		log.Printf("error serializing IP part of packet: %v", err)
+		verbosef("error serializing IP part of packet: %v", err)
 	}
 
 	return tmp.Bytes(), nil

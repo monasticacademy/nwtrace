@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"log"
 	"net"
 )
 
@@ -28,7 +27,7 @@ func proxyTCPConn(subprocess net.Conn) {
 	// to reach, so that's the address we dial in order to proxy
 	world, err := net.Dial("tcp", subprocess.LocalAddr().String())
 	if err != nil {
-		log.Printf("service loop exited with error: %v", err)
+		verbosef("service loop exited with error: %v", err)
 		return
 	}
 
@@ -47,14 +46,14 @@ func proxyWorldToSubprocess(toSubprocess io.Writer, fromWorld net.Conn) {
 		}
 		if err != nil {
 			// how to indicate to outside world that the read failed?
-			log.Printf("failed to read from world in proxy: %v, abandoning", err)
+			verbosef("failed to read from world in proxy: %v, abandoning", err)
 			return
 		}
 
 		// send packet to channel, drop on failure
 		_, err = toSubprocess.Write(buf[:n])
 		if err != nil {
-			log.Printf("error writing data to subprocess: %v, dropping %d bytes", err, n)
+			verbosef("error writing data to subprocess: %v, dropping %d bytes", err, n)
 		}
 	}
 }
@@ -68,15 +67,15 @@ func proxySubprocessToWorld(toWorld net.Conn, fromSubprocess io.Reader) {
 			return
 		}
 		if err != nil {
-			log.Printf("failed to read from subprocess in proxy: %v, abandoning", err)
+			verbosef("failed to read from subprocess in proxy: %v, abandoning", err)
 			return
 		}
 
-		log.Printf("proxying %d bytes from subprocess to world", n)
+		verbosef("proxying %d bytes from subprocess to world", n)
 		_, err = toWorld.Write(buf[:n])
 		if err != nil {
 			// how to indicate to outside world that the write failed?
-			log.Printf("failed to write %d bytes from subprocess to world: %v", n, err)
+			verbosef("failed to write %d bytes from subprocess to world: %v", n, err)
 			return
 		}
 	}

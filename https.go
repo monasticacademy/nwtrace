@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 
@@ -17,11 +16,11 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			log.Printf("accept returned errror: %v, exiting proxyHTTPS", err)
+			verbosef("accept returned errror: %v, exiting proxyHTTPS", err)
 			return
 		}
 
-		log.Printf("intercepted a connection to %v", conn.LocalAddr())
+		verbosef("intercepted a connection to %v", conn.LocalAddr())
 
 		go func() {
 			var challenge string
@@ -29,18 +28,18 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 			// create a tls server with certificates generated on-the-fly from our root CA
 			tlsconn := tls.Server(conn, &tls.Config{
 				GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-					log.Printf("got challenge for %q", hello.ServerName)
+					verbosef("got challenge for %q", hello.ServerName)
 					challenge = hello.ServerName
 
 					onthefly, err := certin.NewCert(root, certin.Request{CN: hello.ServerName})
 					if err != nil {
-						log.Println("error creating cert: %w", err)
+						verbosef("error creating cert: %w", err)
 						return nil, fmt.Errorf("error creating on-the-fly certificate for %q: %w", hello.ServerName, err)
 					}
 
 					err = writeCertFile(onthefly.Certificate.Raw, "certificate.crt")
 					if err != nil {
-						log.Printf("error writing on-the-fly certificate to file: %v, ignoring", err)
+						verbosef("error writing on-the-fly certificate to file: %v, ignoring", err)
 					}
 
 					tlscert := onthefly.TLSCertificate()
@@ -48,12 +47,12 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 				},
 			})
 
-			log.Printf("reading request sent to %v ...", conn.LocalAddr())
+			verbosef("reading request sent to %v ...", conn.LocalAddr())
 
 			// read the HTTP request
 			req, err := http.ReadRequest(bufio.NewReader(tlsconn))
 			if err != nil {
-				log.Printf("error reading http request over tls server conn: %v, aborting", err)
+				verbosef("error reading http request over tls server conn: %v, aborting", err)
 				return
 			}
 			defer req.Body.Close()
@@ -61,7 +60,7 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 			// read the HTTP body
 			// body, err := io.ReadAll(req.Body)
 			// if err != nil {
-			// 	log.Printf("error reading http request body over tls server conn: %v, aborting", err)
+			// 	verbosef("error reading http request body over tls server conn: %v, aborting", err)
 			// 	return
 			// }
 
@@ -79,11 +78,11 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 
 			err = resp.Write(tlsconn)
 			if err != nil {
-				log.Printf("error writing response to tls server conn: %v", err)
+				verbosef("error writing response to tls server conn: %v", err)
 				return
 			}
 
-			log.Printf("intercepted %v %v, replyied with 200", req.Method, req.URL)
+			verbosef("intercepted %v %v, replyied with 200", req.Method, req.URL)
 
 			//tlsconn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhello from httptap\r\n\r\n"))
 		}()

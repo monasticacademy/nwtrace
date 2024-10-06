@@ -46,17 +46,17 @@ func copyToDevice(ctx context.Context, dst *water.Interface, src chan []byte) er
 		case packet := <-src:
 			_, err := dst.Write(packet)
 			if err != nil {
-				log.Printf("error writing %d bytes to tun: %v, dropping and continuing...", len(packet), err)
+				verbosef("error writing %d bytes to tun: %v, dropping and continuing...", len(packet), err)
 			}
 
 			if dumpPacketsToSubprocess {
 				reply := gopacket.NewPacket(packet, layers.LayerTypeIPv4, gopacket.Default)
-				log.Println(strings.Repeat("\n", 3))
-				log.Println(strings.Repeat("=", 80))
-				log.Println("To subprocess:")
-				log.Println(reply.Dump())
+				verbose(strings.Repeat("\n", 3))
+				verbose(strings.Repeat("=", 80))
+				verbose("To subprocess:")
+				verbose(reply.Dump())
 			} else {
-				log.Printf("transmitting %v raw bytes to subprocess", len(packet))
+				verbosef("transmitting %v raw bytes to subprocess", len(packet))
 			}
 		}
 	}
@@ -87,7 +87,7 @@ func writeCertFile(cert []byte, path string) error {
 		return fmt.Errorf("error encoding CA to pem: %w", err)
 	}
 
-	log.Printf("created %v", path)
+	verbosef("created %v", path)
 	return nil
 }
 
@@ -101,7 +101,7 @@ func verbose(msg string) {
 
 func verbosef(fmt string, parts ...interface{}) {
 	if isVerbose {
-		log.Printf(fmt, parts...)
+		verbosef(fmt, parts...)
 	}
 }
 
@@ -244,7 +244,6 @@ func Main() error {
 		if err != nil {
 			return fmt.Errorf("error parsing group id %q as a number: %w", u.Gid, err)
 		}
-		_ = gid
 
 		// there are three (!) user/group IDs for a process: the real, effective, and saved
 		// they have the purpose of allowing the process to go "back" to them
@@ -252,15 +251,15 @@ func Main() error {
 
 		err = unix.Setgid(gid)
 		if err != nil {
-			log.Printf("error switching to group %q (gid %v): %v", args.User, gid, err)
+			return fmt.Errorf("error switching to group %q (gid %v): %w", args.User, gid, err)
 		}
 
 		err = unix.Setuid(uid)
 		if err != nil {
-			log.Printf("error switching to user %q (uid %v): %v", args.User, uid, err)
+			return fmt.Errorf("error switching to user %q (uid %v): %w", args.User, uid, err)
 		}
 
-		log.Printf("now in uid %d, gid %d", unix.Getuid(), unix.Getgid())
+		verbosef("now in uid %d, gid %d", unix.Getuid(), unix.Getgid())
 	}
 
 	// create environment for the subprocess
@@ -272,7 +271,7 @@ func Main() error {
 		"REQUESTS_CA_BUNDLE="+caPath,
 		"SSL_CERT_FILE="+caPath,
 	)
-	log.Println("running subcommand now ================")
+	verbose("running subcommand now ================")
 
 	// launch a subprocess -- we are already in the network namespace so nothing special here
 	cmd := exec.Command(args.Command[0])
@@ -293,7 +292,7 @@ func Main() error {
 
 	// start a goroutine to process packets from the subprocess -- this will be killed
 	// when the subprocess completes
-	log.Printf("listening on %v", args.Tun)
+	verbosef("listening on %v", args.Tun)
 	go func() {
 		// instantiate the tcp and udp stacks
 		tcpstack := newTCPStack(toSubprocess)
@@ -318,7 +317,7 @@ func Main() error {
 		for {
 			n, err := tun.Read(buf)
 			if err != nil {
-				log.Printf("error reading a packet from tun: %v, ignoring", err)
+				verbosef("error reading a packet from tun: %v, ignoring", err)
 				continue
 			}
 
@@ -335,18 +334,18 @@ func Main() error {
 			}
 
 			if dumpPacketsFromSubprocess {
-				log.Println(strings.Repeat("\n", 3))
-				log.Println(strings.Repeat("=", 80))
-				log.Println("From subprocess:")
-				log.Println(packet.Dump())
+				verbose(strings.Repeat("\n", 3))
+				verbose(strings.Repeat("=", 80))
+				verbose("From subprocess:")
+				verbose(packet.Dump())
 			}
 
 			if isTCP {
-				log.Printf("received from subprocess: %v", onelineTCP(ipv4, tcp, tcp.Payload))
+				verbosef("received from subprocess: %v", onelineTCP(ipv4, tcp, tcp.Payload))
 				tcpstack.handlePacket(ipv4, tcp, tcp.Payload)
 			}
 			if isUDP {
-				log.Printf("received from subprocess: %v", onelineUDP(ipv4, udp, udp.Payload))
+				verbosef("received from subprocess: %v", onelineUDP(ipv4, udp, udp.Payload))
 				udpstack.handlePacket(ipv4, udp, udp.Payload)
 			}
 		}

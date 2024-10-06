@@ -72,7 +72,7 @@ func proxySubprocessToWorld(toWorld net.Conn, fromSubprocess io.Reader) {
 			return
 		}
 
-		log.Printf("stream writing %d bytes (%q) to world connection", n, preview(buf[:n]))
+		log.Printf("proxying %d bytes from subprocess to world", n)
 		_, err = toWorld.Write(buf[:n])
 		if err != nil {
 			// how to indicate to outside world that the write failed?

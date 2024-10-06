@@ -169,8 +169,7 @@ func (s *udpStack) handlePacket(ipv4 *layers.IPv4, udp *layers.UDP, payload []by
 	}
 
 	// forward the data to application-level listeners
-	log.Printf("got %d udp bytes to %v:%v (%q), delivering to application",
-		len(udp.Payload), ipv4.DstIP, udp.DstPort, preview(udp.Payload))
+	log.Printf("got %d udp bytes to %v:%v, delivering to application", len(udp.Payload), ipv4.DstIP, udp.DstPort)
 
 	s.notifyHandlers(&w, &udpPacket{ipv4, udp, payload})
 }

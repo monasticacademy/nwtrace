@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/alexflint/go-arg"
 	"github.com/google/gopacket"
@@ -63,35 +62,6 @@ func copyToDevice(ctx context.Context, dst *water.Interface, src chan []byte) er
 	}
 }
 
-// preview returns the first 100 bytes or first line of its input, whichever is shorter
-func preview(b []byte) string {
-	var truncated bool
-	s := string(b)
-	pos := strings.Index(s, "\n")
-	if pos >= 0 {
-		s = s[:pos]
-		truncated = true
-	}
-	if len(s) > 100 {
-		s = s[:100] + "..."
-		truncated = true
-	}
-
-	var out strings.Builder
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsPunct(r) {
-			out.WriteRune(r)
-		} else {
-			out.WriteRune('.')
-		}
-	}
-
-	if truncated {
-		out.WriteString("...")
-	}
-	return out.String()
-}
-
 // layernames makes a one-line list of layers in a packet
 func layernames(packet gopacket.Packet) []string {
 	var s []string
@@ -121,6 +91,20 @@ func writeCertFile(cert []byte, path string) error {
 	return nil
 }
 
+var isVerbose bool
+
+func verbose(msg string) {
+	if isVerbose {
+		log.Print(msg)
+	}
+}
+
+func verbosef(fmt string, parts ...interface{}) {
+	if isVerbose {
+		log.Printf(fmt, parts...)
+	}
+}
+
 func Main() error {
 	ctx := context.Background()
 	var args struct {
@@ -137,6 +121,8 @@ func Main() error {
 	if len(args.Command) == 0 {
 		args.Command = []string{"/bin/sh"}
 	}
+
+	isVerbose = args.Verbose
 
 	// save the working directory
 	cwd, err := os.Getwd()
@@ -318,10 +304,8 @@ func Main() error {
 			handleDNS(context.Background(), w, p.payload)
 		})
 
-		// TODO: proxy all other DNS queries to the public internet
-		// udpstack.HandleFunc(":53", func(w udpResponder, p *udpPacket) {
-		// 	proxyUDP(w, p)
-		// })
+		// TODO: proxy all other UDP packets to the public internet
+		// go proxyUDP(udppstack.Listen("*"))
 
 		// intercept all https connections on port 443
 		go proxyHTTPS(tcpstack.Listen(":443"), ca)

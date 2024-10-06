@@ -59,11 +59,11 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 			defer req.Body.Close()
 
 			// read the HTTP body
-			body, err := io.ReadAll(req.Body)
-			if err != nil {
-				log.Printf("error reading http request body over tls server conn: %v, aborting", err)
-				return
-			}
+			// body, err := io.ReadAll(req.Body)
+			// if err != nil {
+			// 	log.Printf("error reading http request body over tls server conn: %v, aborting", err)
+			// 	return
+			// }
 
 			respbody := fmt.Sprintf("hello from httptap[%v]", challenge)
 
@@ -83,7 +83,7 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 				return
 			}
 
-			log.Printf("intercepted %v %v (%q), replyied with 200", req.Method, req.URL, preview(body))
+			log.Printf("intercepted %v %v, replyied with 200", req.Method, req.URL)
 
 			//tlsconn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhello from httptap\r\n\r\n"))
 		}()

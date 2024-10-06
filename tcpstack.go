@@ -397,7 +397,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 
 	// payload packets will often have ACK set, which acknowledges previously sent bytes
 	if !tcp.SYN && len(tcp.Payload) > 0 && stream.state == StateConnected {
-		log.Printf("got %d tcp bytes to %v:%v (%q), forwarding to world", len(tcp.Payload), ipv4.DstIP, tcp.DstPort, preview(tcp.Payload))
+		log.Printf("got %d tcp bytes to %v:%v, forwarding to application", len(tcp.Payload), ipv4.DstIP, tcp.DstPort)
 
 		// update TCP sequence number -- this is not an increment but an overwrite, so no race condition here
 		atomic.StoreUint32(&stream.ack, tcp.Seq+uint32(len(tcp.Payload)))

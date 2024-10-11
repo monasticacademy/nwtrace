@@ -196,7 +196,7 @@ func serializeUDP(ipv4 *layers.IPv4, udp *layers.UDP, payload []byte, tmp gopack
 
 	err = ipv4.SerializeTo(tmp, opts)
 	if err != nil {
-		verbosef("error serializing IP part of packet: %v", err)
+		errorf("error serializing IP part of packet: %v", err)
 	}
 
 	return tmp.Bytes(), nil

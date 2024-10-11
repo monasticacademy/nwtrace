@@ -6,14 +6,17 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/user"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alexflint/go-arg"
+	"github.com/fatih/color"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/joemiller/certin"
@@ -46,7 +49,7 @@ func copyToDevice(ctx context.Context, dst *water.Interface, src chan []byte) er
 		case packet := <-src:
 			_, err := dst.Write(packet)
 			if err != nil {
-				verbosef("error writing %d bytes to tun: %v, dropping and continuing...", len(packet), err)
+				errorf("error writing %d bytes to tun: %v, dropping and continuing...", len(packet), err)
 			}
 
 			if dumpPacketsToSubprocess {
@@ -101,18 +104,29 @@ func verbose(msg string) {
 
 func verbosef(fmt string, parts ...interface{}) {
 	if isVerbose {
-		verbosef(fmt, parts...)
+		log.Printf(fmt, parts...)
 	}
+}
+
+var errorColor = color.New(color.FgRed, color.Bold)
+
+func errorf(fmt string, parts ...interface{}) {
+	if !strings.HasSuffix(fmt, "\n") {
+		fmt += "\n"
+	}
+	errorColor.Printf(fmt, parts...)
 }
 
 func Main() error {
 	ctx := context.Background()
 	var args struct {
 		Verbose bool     `arg:"-v,--verbose"`
+		Stderr  bool     `help:"log to stderr (default is stdout)"`
 		Tun     string   `default:"httptap"`
 		Link    string   `default:"10.1.1.100/24"`
 		Route   string   `default:"0.0.0.0/0"`
 		Gateway string   `default:"10.1.1.1"`
+		WebUI   string   `help:"address:port to serve API on"`
 		User    string   `help:"run command as this user (username or id)"`
 		Command []string `arg:"positional"`
 	}
@@ -120,6 +134,9 @@ func Main() error {
 
 	if len(args.Command) == 0 {
 		args.Command = []string{"/bin/sh"}
+	}
+	if args.Stderr {
+		log.SetOutput(os.Stderr)
 	}
 
 	isVerbose = args.Verbose
@@ -262,7 +279,47 @@ func Main() error {
 		verbosef("now in uid %d, gid %d", unix.Getuid(), unix.Getgid())
 	}
 
-	// create environment for the subprocess
+	// start a web server if request
+	if args.WebUI != "" {
+		// TODO: open listener first so that we can check that it works before proceeding
+		go func() {
+			http.HandleFunc("/api/calls", func(w http.ResponseWriter, r *http.Request) {
+				log.Println("at /api/calls")
+				// TODO: do not set cors headers like this by default
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+				w.Header().Set("Access-Control-Expose-Headers", "Content-Type")
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+
+				f := w.(http.Flusher)
+
+				// Simulate sending events (you can replace this with real data)
+				tick := time.NewTicker(500 * time.Millisecond)
+				defer tick.Stop()
+
+			outer:
+				for {
+					select {
+					case <-tick.C:
+						log.Println("sending an event")
+						fmt.Fprintf(w, `data: {"request":{"url":"/foo/bar", "method":"POST"},"response":{"status":"200","size":17449}}`+"\n\n")
+						f.Flush()
+					case <-r.Context().Done():
+						break outer
+					}
+				}
+			})
+
+			log.Printf("listening on %v ...", args.WebUI)
+			err := http.ListenAndServe(args.WebUI, nil)
+			if err != nil {
+				log.Fatal(err) // TODO: gracefully shut down the whole app
+			}
+		}()
+	}
+
+	// set up environment variables for the subprocess
 	env := append(
 		os.Environ(),
 		"PS1=HTTPTAP # ",
@@ -271,6 +328,7 @@ func Main() error {
 		"REQUESTS_CA_BUNDLE="+caPath,
 		"SSL_CERT_FILE="+caPath,
 	)
+
 	verbose("running subcommand now ================")
 
 	// launch a subprocess -- we are already in the network namespace so nothing special here
@@ -317,7 +375,7 @@ func Main() error {
 		for {
 			n, err := tun.Read(buf)
 			if err != nil {
-				verbosef("error reading a packet from tun: %v, ignoring", err)
+				errorf("error reading a packet from tun: %v, ignoring", err)
 				continue
 			}
 

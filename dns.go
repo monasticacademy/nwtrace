@@ -14,7 +14,7 @@ func handleDNS(ctx context.Context, w io.Writer, payload []byte) {
 	var req dns.Msg
 	err := req.Unpack(payload)
 	if err != nil {
-		verbosef("error unpacking dns packet: %v, ignoring", err)
+		errorf("error unpacking dns packet: %v, ignoring", err)
 		return
 	}
 
@@ -39,14 +39,14 @@ func handleDNS(ctx context.Context, w io.Writer, payload []byte) {
 	// serialize the response
 	buf, err := resp.Pack()
 	if err != nil {
-		verbosef("error serializing dns response: %v, abandoning...", err)
+		errorf("error serializing dns response: %v, abandoning...", err)
 		return
 	}
 
 	// always send the entire buffer in a single Write() since UDP writes one packet per call to Write()
 	_, err = w.Write(buf)
 	if err != nil {
-		verbosef("error writing dns response: %v, abandoning...", err)
+		errorf("error writing dns response: %v, abandoning...", err)
 		return
 	}
 }

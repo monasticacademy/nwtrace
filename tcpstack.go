@@ -318,7 +318,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		// serialize the packet
 		serialized, err := serializeTCP(&replyipv4, &replytcp, nil, stream.serializeBuf)
 		if err != nil {
-			verbosef("error serializing reply TCP: %v, dropping", err)
+			errorf("error serializing reply TCP: %v, dropping", err)
 			return
 		}
 
@@ -370,7 +370,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		// serialize the packet
 		serialized, err := serializeTCP(&replyipv4, &replytcp, nil, stream.serializeBuf)
 		if err != nil {
-			verbosef("error serializing reply TCP: %v, dropping", err)
+			errorf("error serializing reply TCP: %v, dropping", err)
 			return
 		}
 
@@ -429,7 +429,7 @@ func serializeTCP(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte, tmp gopack
 
 	err = ipv4.SerializeTo(tmp, opts)
 	if err != nil {
-		verbosef("error serializing IP part of packet: %v", err)
+		errorf("error serializing IP part of packet: %v", err)
 	}
 
 	return tmp.Bytes(), nil

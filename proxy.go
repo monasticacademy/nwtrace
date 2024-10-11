@@ -46,14 +46,14 @@ func proxyWorldToSubprocess(toSubprocess io.Writer, fromWorld net.Conn) {
 		}
 		if err != nil {
 			// how to indicate to outside world that the read failed?
-			verbosef("failed to read from world in proxy: %v, abandoning", err)
+			errorf("error reading from world in proxy: %v, abandoning", err)
 			return
 		}
 
 		// send packet to channel, drop on failure
 		_, err = toSubprocess.Write(buf[:n])
 		if err != nil {
-			verbosef("error writing data to subprocess: %v, dropping %d bytes", err, n)
+			errorf("error writing data to subprocess: %v, dropping %d bytes", err, n)
 		}
 	}
 }
@@ -67,7 +67,7 @@ func proxySubprocessToWorld(toWorld net.Conn, fromSubprocess io.Reader) {
 			return
 		}
 		if err != nil {
-			verbosef("failed to read from subprocess in proxy: %v, abandoning", err)
+			errorf("error reading from subprocess in proxy: %v, abandoning", err)
 			return
 		}
 
@@ -75,7 +75,7 @@ func proxySubprocessToWorld(toWorld net.Conn, fromSubprocess io.Reader) {
 		_, err = toWorld.Write(buf[:n])
 		if err != nil {
 			// how to indicate to outside world that the write failed?
-			verbosef("failed to write %d bytes from subprocess to world: %v", n, err)
+			errorf("error writing %d bytes from subprocess to world: %v", n, err)
 			return
 		}
 	}

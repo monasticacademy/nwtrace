@@ -56,6 +56,11 @@ test-with-oci:
 	make build
 	.build/httptap -- oci ce cluster generate-token --region us-ashburn-1 --cluster-id ocid1.cluster.oc1.iad.aaaaaaaauluvhw2v2emhebn4h724eedou76nhacixlczbj4emc52m44j4asq
 
+test-with-webui:
+	rm -rf out
+	make build
+	.build/httptap --webui :5000 -- sleep infinity
+
 build:
 	mkdir -p .build
 	go build -o .build/httptap

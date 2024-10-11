@@ -1,0 +1,161 @@
+/* variables */
+
+:root {
+  --background: rgb(255, 255, 255);
+  --foreground: rgb(23, 23, 23);
+  --border: rgba(0, 0, 0, 0.2);
+  --selected: rgb(0, 96, 223);
+  --selected-background: rgba(0, 96, 223, .1);
+  --row-hover: rgb(218, 237, 255);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: rgb(10, 10, 10);
+    --foreground: rgb(237, 237, 237);
+  }
+}
+
+/* reset default styles */
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+html,
+body,
+p,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+ul,
+ol,
+li,
+dl,
+dt,
+dd,
+a,
+i,
+mark,
+img,
+span,
+div,
+header,
+nav,
+section,
+footer,
+article,
+aside,
+main,
+menu,
+form,
+input,
+button {
+  border: 0;
+  font-size: 100%;
+  font-family: inherit;
+  font-style: inherit;
+  vertical-align: baseline;
+  list-style: none;
+  text-decoration: none;
+  color: inherit;
+  background-color: transparent;
+}
+
+input {
+  border: none;
+  background-image: none;
+  background-color: transparent;
+  -webkit-box-shadow: none;
+  -moz-box-shadow: none;
+  box-shadow: none;
+}
+
+/* main */
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+@media (prefers-color-scheme: dark) {
+  html {
+    color-scheme: dark;
+  }
+}
+
+body {
+  width: 100%;
+  color: var(--foreground);
+  background: var(--background);
+  font-family: Arial, Helvetica, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+main {
+  width: 100%;
+  font-size: 0.7em;
+
+  menu {
+    display: flex;
+    flex-direction: row;
+    width: 100%;
+    padding: 0.3em 1em ;
+    gap: 1px;
+
+    button {
+      padding: 0.2em 0.4em;
+      border-radius: 2px;
+    }
+
+    button.selected {
+      color: var(--selected);
+      background-color: var(--selected-background);
+      border-bottom: 2px solid var(--selected);
+    }
+
+    button:hover {
+      background-color: rgba(0, 0, 0, .1);
+    }
+  }
+
+  table {
+    table-layout: fixed;
+    border-collapse: collapse;
+    width: 100%;
+
+    td {
+      padding: 0.2em 0.4em;
+    }
+
+    td:not(:first-child) {
+      border-left: 1px solid rgba(0, 0, 0, .1);
+    }
+
+    thead {
+      tr {
+        border-top: 1px solid lightgray;
+        border-bottom: 1px solid lightgray;
+        background-color: rgba(0, 0, 0, .03);
+      }
+    }
+
+    tbody {
+      tr:nth-child(odd) {
+        background-color: rgba(0, 0, 0, .01);
+      }
+    }
+  }
+}

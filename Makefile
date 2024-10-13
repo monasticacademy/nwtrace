@@ -24,7 +24,7 @@ test-with-curl:
 test-with-curl-https:
 	rm -f out
 	make build
-	.build/httptap -- bash -c "curl -v -s https://example.com > out"
+	.build/httptap -v -- bash -c "curl -s https://example.com > out"
 
 test-with-curl-monasticacademy:
 	rm -f out
@@ -56,10 +56,15 @@ test-with-oci:
 	make build
 	.build/httptap -- oci ce cluster generate-token --region us-ashburn-1 --cluster-id ocid1.cluster.oc1.iad.aaaaaaaauluvhw2v2emhebn4h724eedou76nhacixlczbj4emc52m44j4asq
 
-test-with-webui:
+test-with-sleep-forever:
 	rm -rf out
 	make build
 	.build/httptap --webui :5000 -- sleep infinity
+
+test-with-curl-loop:
+	rm -rf out
+	make build
+	.build/httptap --verbose --webui :5000 -- bash -c "while true; do echo "curling..."; curl -s https://www.example.com > out; sleep 1; done"
 
 build:
 	mkdir -p .build

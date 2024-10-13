@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log"
@@ -13,7 +14,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/alexflint/go-arg"
 	"github.com/fatih/color"
@@ -285,25 +285,29 @@ func Main() error {
 		go func() {
 			http.HandleFunc("/api/calls", func(w http.ResponseWriter, r *http.Request) {
 				log.Println("at /api/calls")
+
+				// listen for HTTP request/response pairs intercepted by the proxy
+				ch, history := listenHTTP()
+				_ = history
+
 				// TODO: do not set cors headers like this by default
 				w.Header().Set("Access-Control-Allow-Origin", "*")
 				w.Header().Set("Access-Control-Expose-Headers", "Content-Type")
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.Header().Set("Cache-Control", "no-cache")
 				w.Header().Set("Connection", "keep-alive")
+				w.WriteHeader(http.StatusOK)
 
 				f := w.(http.Flusher)
-
-				// Simulate sending events (you can replace this with real data)
-				tick := time.NewTicker(500 * time.Millisecond)
-				defer tick.Stop()
 
 			outer:
 				for {
 					select {
-					case <-tick.C:
+					case httpcall := <-ch:
 						log.Println("sending an event")
-						fmt.Fprintf(w, `data: {"request":{"url":"/foo/bar", "method":"POST"},"response":{"status":"200","size":17449}}`+"\n\n")
+						fmt.Fprint(w, "data: ")
+						json.NewEncoder(w).Encode(httpcall)
+						fmt.Fprint(w, "\n\n")
 						f.Flush()
 					case <-r.Context().Done():
 						break outer

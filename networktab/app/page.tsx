@@ -29,7 +29,6 @@ export default function Home() {
     const stream = new EventSource('http://localhost:5000/api/calls');
     stream.onmessage = (event) => {
       const payload: Call = JSON.parse(event.data);
-      console.log(payload);
       setCalls((calls) => [...calls, payload]);
     };
     stream.onerror = (err) => {

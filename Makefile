@@ -1,4 +1,9 @@
 
+build:
+	mkdir -p .build
+	go build -o .build/httptap
+	sudo setcap 'cap_net_admin=ep cap_sys_admin=ep' .build/httptap
+
 bash:
 	make build
 	.build/httptap bash
@@ -19,7 +24,7 @@ test-with-netcat-http:
 test-with-curl:
 	rm -f out
 	make build
-	.build/httptap -- bash -c "curl -s http://example.com > out"
+	.build/httptap -v -- bash -c "curl -s http://example.com > out"
 
 test-with-curl-https:
 	rm -f out
@@ -65,8 +70,3 @@ test-with-curl-loop:
 	rm -rf out
 	make build
 	.build/httptap --verbose --webui :5000 -- bash -c "while true; do echo "curling..."; curl -s https://www.example.com > out; sleep 1; done"
-
-build:
-	mkdir -p .build
-	go build -o .build/httptap
-	sudo setcap 'cap_net_admin=ep cap_sys_admin=ep' .build/httptap

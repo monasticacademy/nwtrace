@@ -7,7 +7,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -95,6 +94,7 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 
 		go func() {
 			defer handlePanic()
+			defer conn.Close()
 
 			var serverName string
 
@@ -119,6 +119,7 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 					return &tlscert, nil
 				},
 			})
+			defer tlsconn.Close()
 
 			verbosef("reading request sent to %v ...", conn.LocalAddr())
 
@@ -174,7 +175,7 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 			if err != nil {
 				// error here means the server hostname could not be resolved, or a TCP connection could not be made,
 				// or TLS could not be negotiated, or something like that
-				body := []byte(err.Error())
+				errbody := []byte(err.Error())
 				resp = &http.Response{
 					Proto:         req.Proto,
 					ProtoMajor:    req.ProtoMajor,
@@ -182,12 +183,35 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 					Status:        http.StatusText(http.StatusBadGateway),
 					StatusCode:    http.StatusBadGateway,
 					Header:        make(http.Header),
-					ContentLength: int64(len(body)),
-					Body:          io.NopCloser(bytes.NewReader(body)),
+					ContentLength: int64(len(errbody)),
+					Body:          io.NopCloser(bytes.NewReader(errbody)),
 				}
 
 				errorf("error proxying request to %v: %v, returning %v", dialTo, err, resp.Status)
 			}
+			defer resp.Body.Close()
+
+			// read the body into memory
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				errbody := []byte(err.Error())
+				resp = &http.Response{
+					Proto:         req.Proto,
+					ProtoMajor:    req.ProtoMajor,
+					ProtoMinor:    req.ProtoMinor,
+					Status:        http.StatusText(http.StatusBadGateway),
+					StatusCode:    http.StatusBadGateway,
+					Header:        make(http.Header),
+					ContentLength: int64(len(errbody)),
+					Body:          io.NopCloser(bytes.NewReader(errbody)),
+				}
+
+				errorf("error reading response %v: %v", dialTo, err)
+			}
+
+			// overwrite the body with an in-memory reader
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			resp.ContentLength = int64(len(body))
 
 			// make the summary the we will log to disk and expose via the API
 			call := HTTPCall{
@@ -202,7 +226,7 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 				},
 			}
 
-			log.Println("notifyHTTP...")
+			verbosef("notifyHTTP %v %v %v (%d bytes)...", req.Method, req.URL, resp.Status, resp.ContentLength)
 			notifyHTTP(&call)
 
 			// log the response
@@ -217,18 +241,19 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 			default:
 				respcolor = color.New(color.FgRed)
 			}
-			respcolor.Printf("<--- %v %v\n", resp.StatusCode, req.URL)
+			respcolor.Printf("<--- %v %v (%d bytes)\n", resp.StatusCode, req.URL, resp.ContentLength)
 
 			resp.Header.Set("x-httptap", serverName)
 
 			// proxy the response from the world back to the subprocess
+			verbosef("replying to %v %v with %v (%d bytes) ...", req.Method, req.URL, resp.Status, resp.ContentLength)
 			err = resp.Write(tlsconn)
 			if err != nil {
 				errorf("error writing response to tls server conn: %v", err)
 				return
 			}
 
-			verbosef("intercepted %v %v, replyied with %v", req.Method, req.URL, resp.Status)
+			verbosef("finished replying to %v %v with %v (%d bytes)", req.Method, req.URL, resp.Status, resp.ContentLength)
 		}()
 	}
 }

@@ -192,26 +192,26 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 			defer resp.Body.Close()
 
 			// read the body into memory
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				errbody := []byte(err.Error())
-				resp = &http.Response{
-					Proto:         req.Proto,
-					ProtoMajor:    req.ProtoMajor,
-					ProtoMinor:    req.ProtoMinor,
-					Status:        http.StatusText(http.StatusBadGateway),
-					StatusCode:    http.StatusBadGateway,
-					Header:        make(http.Header),
-					ContentLength: int64(len(errbody)),
-					Body:          io.NopCloser(bytes.NewReader(errbody)),
-				}
+			// body, err := io.ReadAll(resp.Body)
+			// if err != nil {
+			// 	errbody := []byte(err.Error())
+			// 	resp = &http.Response{
+			// 		Proto:         req.Proto,
+			// 		ProtoMajor:    req.ProtoMajor,
+			// 		ProtoMinor:    req.ProtoMinor,
+			// 		Status:        http.StatusText(http.StatusBadGateway),
+			// 		StatusCode:    http.StatusBadGateway,
+			// 		Header:        make(http.Header),
+			// 		ContentLength: int64(len(errbody)),
+			// 		Body:          io.NopCloser(bytes.NewReader(errbody)),
+			// 	}
 
-				errorf("error reading response %v: %v", dialTo, err)
-			}
+			// 	errorf("error reading response %v: %v", dialTo, err)
+			// }
 
 			// overwrite the body with an in-memory reader
-			resp.Body = io.NopCloser(bytes.NewReader(body))
-			resp.ContentLength = int64(len(body))
+			// resp.Body = io.NopCloser(bytes.NewReader(body))
+			// resp.ContentLength = int64(len(body))
 
 			// make the summary the we will log to disk and expose via the API
 			call := HTTPCall{

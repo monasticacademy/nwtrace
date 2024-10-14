@@ -76,6 +76,10 @@ test-with-netcat-11223:
 	make build
 	.build/httptap --verbose -- bash -c "netcat example.com 11223 < /dev/null"
 
+test-with-gcloud:
+	rm -rf out
+	make build
+	.build/httptap -- gcloud compute instances list
 
 netcat-experiment:
 	netcat localhost 11223 < /dev/null

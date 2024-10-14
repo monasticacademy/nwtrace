@@ -98,19 +98,19 @@ func newTCPStream(world AddrPort, subprocess AddrPort, out chan []byte) *tcpStre
 
 // for net.Conn interface
 func (s *tcpStream) SetDeadline(t time.Time) error {
-	errorf("SetDeadline not implemented for TCP streams, ignoring")
+	verbose("SetDeadline not implemented for TCP streams, ignoring")
 	return nil
 }
 
 // for net.Conn interface
 func (s *tcpStream) SetReadDeadline(t time.Time) error {
-	errorf("SetReadDeadline not implemented for TCP streams, ignoring")
+	verbose("SetReadDeadline not implemented for TCP streams, ignoring")
 	return nil
 }
 
 // for net.Conn interface
 func (s *tcpStream) SetWriteDeadline(t time.Time) error {
-	errorf("SetWriteDeadline not implemented for TCP streams, ignoring")
+	verbose("SetWriteDeadline not implemented for TCP streams, ignoring")
 	return nil
 }
 
@@ -205,9 +205,12 @@ func (s *tcpStream) Write(payload []byte) (int, error) {
 // Close the connection by sending a FIN packet
 func (s *tcpStream) Close() error {
 	switch s.state {
-	case StateInit, StateFinished:
-		errorf("application tried tp close a TCP stream in state %v, ignoring", s.state)
-		return fmt.Errorf("application tried close a TCP stream in state %v, ignoring", s.state)
+	case StateInit:
+		errorf("application tried tp close a TCP stream in state %v, returning error", s.state)
+		return fmt.Errorf("cannot close TCP stream in state %v", s.state)
+	case StateFinished:
+		verbosef("application tried tp close a TCP stream in state %v, ignoring", s.state)
+		return nil
 	}
 
 	// TODO: s.state should be protected with a mutex

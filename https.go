@@ -203,9 +203,9 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 				// or TLS could not be negotiated, or something like that
 				errbody := []byte(err.Error())
 				resp = &http.Response{
-					Proto:         req.Proto,
-					ProtoMajor:    req.ProtoMajor,
-					ProtoMinor:    req.ProtoMinor,
+					Proto:         "HTTP/1.1",
+					ProtoMajor:    1,
+					ProtoMinor:    1,
 					Status:        http.StatusText(http.StatusBadGateway),
 					StatusCode:    http.StatusBadGateway,
 					Header:        make(http.Header),
@@ -245,15 +245,22 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 			var respbody bytes.Buffer
 			resp.Body = TeeReadCloser(resp.Body, &respbody)
 
+			// we are currently limited to talking HTTP/1.1 with the subprocess, even if the request we made
+			// to the world was done in HTTP/2
+			resp.Proto = "HTTP/1.1"
+			resp.ProtoMajor = 1
+			resp.ProtoMinor = 1
+
 			// proxy the response from the world back to the subprocess
-			verbosef("replying to %v %v with %v (content length %d) ...", req.Method, req.URL, resp.Status, resp.ContentLength)
+			verbosef("replying to %v %v %v with %v (content length %d) ...", req.Method, req.URL, req.Proto, resp.Status, resp.ContentLength)
 			err = resp.Write(tlsconn)
 			if err != nil {
 				errorf("error writing response to tls server conn: %v", err)
 				return
 			}
 
-			verbosef("finished replying to %v %v (%d bytes) with %v (%d bytes)", req.Method, req.URL, reqbody.Len(), resp.Status, respbody.Len())
+			verbosef("finished replying to %v %v %v (%d bytes) with %v %v (%d bytes)",
+				req.Method, req.URL, req.Proto, reqbody.Len(), resp.Status, resp.Proto, respbody.Len())
 
 			// log the request (do not do this earlier since reqbody may not be compete until now)
 			reqcolor := color.New(color.FgBlue, color.Bold)

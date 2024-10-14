@@ -365,6 +365,11 @@ func Main() error {
 			handleDNS(context.Background(), w, p.payload)
 		})
 
+		tcpstack.HandleFunc(":11223", func(conn net.Conn) {
+			fmt.Fprint(conn, "hello 11223\n")
+			conn.Close()
+		})
+
 		// TODO: proxy all other UDP packets to the public internet
 		// go proxyUDP(udppstack.Listen("*"))
 
@@ -403,11 +408,11 @@ func Main() error {
 			}
 
 			if isTCP {
-				verbosef("received from subprocess: %v", onelineTCP(ipv4, tcp, tcp.Payload))
+				verbosef("received from subprocess: %v", summarizeTCP(ipv4, tcp, tcp.Payload))
 				tcpstack.handlePacket(ipv4, tcp, tcp.Payload)
 			}
 			if isUDP {
-				verbosef("received from subprocess: %v", onelineUDP(ipv4, udp, udp.Payload))
+				verbosef("received from subprocess: %v", summarizeUDP(ipv4, udp, udp.Payload))
 				udpstack.handlePacket(ipv4, udp, udp.Payload)
 			}
 		}

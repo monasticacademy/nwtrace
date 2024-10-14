@@ -18,10 +18,11 @@ import (
 type TCPState int
 
 const (
-	StateInit TCPState = iota + 1
-	StateSynchronizing
-	StateConnected
-	StateFinished
+	StateInit              TCPState = iota + 1
+	StateSynchronizing              // means we have received a SYN and replied with a SYN+ACK, awaiting ACK from other side
+	StateConnected                  // means we have received at least one ACK from other side so can send and receive data
+	StateOtherSideFinished          // means we have received a FIN from other side and responded with FIN+ACK
+	StateFinished                   // means we have sent our own FIN and must not send any more data
 )
 
 // tcpListener is the interface for the application to intercept TCP connections
@@ -158,7 +159,7 @@ func (s *tcpStream) Write(payload []byte) (int, error) {
 	}
 
 	// log
-	verbosef("sending tcp packet to subprocess: %s", onelineTCP(&replyipv4, &replytcp, payload))
+	verbosef("sending tcp packet to subprocess: %s", summarizeTCP(&replyipv4, &replytcp, payload))
 
 	// serialize the data
 	packet, err := serializeTCP(&replyipv4, &replytcp, payload, s.serializeBuf)
@@ -183,8 +184,58 @@ func (s *tcpStream) Write(payload []byte) (int, error) {
 
 // Close the connection by sending a FIN packet
 func (s *tcpStream) Close() error {
-	// TODO
-	verbose("tcp stream closed, would send a FIN packet here")
+	switch s.state {
+	case StateInit, StateFinished:
+		errorf("application tried close a TCP stream in state %v, ignoring", s.state)
+		return fmt.Errorf("application tried close a TCP stream in state %v, ignoring", s.state)
+	}
+
+	// TODO: s.state should be protected with a mutex
+	s.state = StateFinished
+	seq := atomic.AddUint32(&s.seq, 1) - 1
+
+	// make a FIN packet to send to the subprocess
+	tcp := layers.TCP{
+		SrcPort: layers.TCPPort(s.world.Port),
+		DstPort: layers.TCPPort(s.subprocess.Port),
+		FIN:     true,
+		ACK:     true,
+		Seq:     seq,
+		Ack:     atomic.LoadUint32(&s.ack),
+		Window:  64240, // number of bytes we are willing to receive (copied from sender)
+	}
+
+	ipv4 := layers.IPv4{
+		Version:  4, // indicates IPv4
+		TTL:      ttl,
+		Protocol: layers.IPProtocolTCP,
+		SrcIP:    s.world.Addr,
+		DstIP:    s.subprocess.Addr,
+	}
+
+	tcp.SetNetworkLayerForChecksum(&ipv4)
+
+	// log
+	verbosef("sending FIN to subprocess: %s", summarizeTCP(&ipv4, &tcp, nil))
+
+	// serialize the packet (TODO: guard serializeBuf with a mutex)
+	serialized, err := serializeTCP(&ipv4, &tcp, nil, s.serializeBuf)
+	if err != nil {
+		errorf("error serializing reply TCP: %v, dropping", err)
+		return fmt.Errorf("error serializing reply TCP: %w, dropping", err)
+	}
+
+	// make a copy of the data
+	cp := make([]byte, len(serialized))
+	copy(cp, serialized)
+
+	// send to the channel that goes to the subprocess
+	select {
+	case s.toSubprocess <- cp:
+	default:
+		verbosef("channel for sending to subprocess would have blocked, dropping %d bytes", len(cp))
+	}
+
 	return nil
 }
 
@@ -220,7 +271,7 @@ func newTCPStack(toSubprocess chan []byte) *tcpStack {
 	}
 }
 
-// Listen returns a stream when a new stream is created.
+// Listen returns a net.Listener that intercepts connections according to a filter pattern.
 //
 // Pattern can a hostname, a :port, a hostname:port, or "*" for everything". For example:
 //   - "example.com"
@@ -238,6 +289,34 @@ func (s *tcpStack) Listen(pattern string) net.Listener {
 	return &listener
 }
 
+// HandleFunc calls the handler each time a new connection is intercepted mattching the
+// given filter pattern.
+//
+// Pattern can a hostname, a :port, a hostname:port, or "*" for everything". For example:
+//   - "example.com"
+//   - "example.com:80"
+//   - ":80"
+//   - "*"
+//
+// Later this will be like net.Listen
+func (s *tcpStack) HandleFunc(pattern string, handler tcpHandlerFunc) {
+	l := s.Listen(pattern)
+	go func() {
+		defer l.Close()
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				verbosef("accept returned errror: %v, exiting HandleFunc(%v)", err, pattern)
+				return
+			}
+
+			go handler(conn)
+		}
+	}()
+}
+
+type tcpHandlerFunc func(conn net.Conn)
+
 // notifyListeners is called when a new stream is created. It finds the first listener
 // that will accept the given stream. It never blocks.
 func (s *tcpStack) notifyListeners(stream *tcpStream) {
@@ -251,7 +330,7 @@ func (s *tcpStack) notifyListeners(stream *tcpStream) {
 		}
 	}
 
-	verbosef("nobody listening for tcp to %v, dropping!", stream.world)
+	verbosef("nobody listening for tcp to %v, dropping", stream.world)
 }
 
 func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte) {
@@ -267,20 +346,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		// create a new stream no matter what kind of packet this is
 		// later we will reject everything other than SYN packets sent to a fresh stream
 		stream = newTCPStream(dst, src, s.toSubprocess)
-
-		// define the function that wraps payloads in TCP and IP headers
-		// stream.toSubprocess = &tcpWriter{
-		// 	theirIP:   ipv4.SrcIP,
-		// 	ourIP:     ipv4.DstIP,
-		// 	theirPort: tcp.SrcPort,
-		// 	ourPort:   tcp.DstPort,
-		// 	buf:       stream.serializeBuf,
-		// 	out:       s.toSubprocess,
-		// 	stream:    stream,
-		// }
-
 		s.streamsBySrcDst[srcdst] = stream
-
 		s.notifyListeners(stream)
 	}
 
@@ -313,7 +379,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		replytcp.SetNetworkLayerForChecksum(&replyipv4)
 
 		// log
-		verbosef("sending SYN+ACK to subprocess: %s", onelineTCP(&replyipv4, &replytcp, nil))
+		verbosef("sending SYN+ACK to subprocess: %s", summarizeTCP(&replyipv4, &replytcp, nil))
 
 		// serialize the packet
 		serialized, err := serializeTCP(&replyipv4, &replytcp, nil, stream.serializeBuf)
@@ -334,11 +400,11 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		}
 	}
 
-	// handle connection establishment
+	// handle connection teardown
 	if tcp.FIN && stream.state != StateInit {
-		// we should not send any more packets after we send our own FIN, but we can
-		// always safely ack the other side FIN
-		stream.state = StateFinished
+		// according to the tcp spec we are always allowed to ack the other side's FIN, even if we have
+		// already sent our own FIN
+		stream.state = StateOtherSideFinished
 		seq := atomic.AddUint32(&stream.seq, 1) - 1
 		atomic.StoreUint32(&stream.ack, tcp.Seq+1)
 		verbosef("got FIN to %v:%v, now state is %v", ipv4.DstIP, tcp.DstPort, stream.state)
@@ -365,7 +431,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		replytcp.SetNetworkLayerForChecksum(&replyipv4)
 
 		// log
-		verbosef("sending FIN+ACK to subprocess: %s", onelineTCP(&replyipv4, &replytcp, nil))
+		verbosef("sending FIN+ACK to subprocess: %s", summarizeTCP(&replyipv4, &replytcp, nil))
 
 		// serialize the packet
 		serialized, err := serializeTCP(&replyipv4, &replytcp, nil, stream.serializeBuf)
@@ -435,7 +501,8 @@ func serializeTCP(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte, tmp gopack
 	return tmp.Bytes(), nil
 }
 
-func onelineTCP(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte) string {
+// summarizeTCP summarizes a TCP packet into a single line for logging
+func summarizeTCP(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte) string {
 	var flags []string
 	if tcp.FIN {
 		flags = append(flags, "FIN")

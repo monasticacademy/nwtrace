@@ -107,7 +107,7 @@ func (r *udpStackResponder) Write(payload []byte) (int, error) {
 	r.udpheader.SetNetworkLayerForChecksum(r.ipv4header)
 
 	// log
-	verbosef("sending udp packet to subprocess: %s", onelineUDP(r.ipv4header, r.udpheader, payload))
+	verbosef("sending udp packet to subprocess: %s", summarizeUDP(r.ipv4header, r.udpheader, payload))
 
 	// serialize the data
 	packet, err := serializeUDP(r.ipv4header, r.udpheader, payload, r.stack.buf)
@@ -202,7 +202,8 @@ func serializeUDP(ipv4 *layers.IPv4, udp *layers.UDP, payload []byte, tmp gopack
 	return tmp.Bytes(), nil
 }
 
-func onelineUDP(ipv4 *layers.IPv4, udp *layers.UDP, payload []byte) string {
+// summarizeUDP summarizes a UDP packet into a single line for logging
+func summarizeUDP(ipv4 *layers.IPv4, udp *layers.UDP, payload []byte) string {
 	return fmt.Sprintf("UDP %v:%d => %v:%d - Len %d",
 		ipv4.SrcIP, udp.SrcPort, ipv4.DstIP, udp.DstPort, len(udp.Payload))
 }

@@ -70,3 +70,15 @@ test-with-curl-loop:
 	rm -rf out
 	make build
 	.build/httptap --verbose --webui :5000 -- bash -c "while true; do echo "curling..."; curl -s https://www.example.com > out; sleep 1; done"
+
+test-with-netcat-11223:
+	rm -rf out
+	make build
+	.build/httptap --verbose -- bash -c "netcat example.com 11223 < /dev/null"
+
+
+netcat-experiment:
+	netcat localhost 11223 < /dev/null
+
+tcpdump-port-11223:
+	sudo tcpdump -i lo 'tcp port 11223'

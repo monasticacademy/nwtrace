@@ -69,7 +69,7 @@ test-with-sleep-forever:
 test-with-curl-loop:
 	rm -rf out
 	make build
-	.build/httptap --verbose --webui :5000 -- bash -c "while true; do echo "curling..."; curl -s https://www.example.com > out; sleep 1; done"
+	.build/httptap --webui :5000 -- bash -c "while true; do echo "curling..."; curl -s https://www.example.com > out; sleep 1; done"
 
 test-with-netcat-11223:
 	rm -rf out

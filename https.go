@@ -80,6 +80,31 @@ func finishHTTP() {
 	}
 }
 
+// TeeReadCloser returns a Reader that writes to w what it reads from r,
+// just like io.TeeReader, and also implements Close
+func TeeReadCloser(r io.ReadCloser, w io.Writer) io.ReadCloser {
+	return &teeReadCloser{r, w}
+}
+
+type teeReadCloser struct {
+	r io.ReadCloser
+	w io.Writer
+}
+
+func (t *teeReadCloser) Read(p []byte) (n int, err error) {
+	n, err = t.r.Read(p)
+	if n > 0 {
+		if n, err := t.w.Write(p[:n]); err != nil {
+			return n, err
+		}
+	}
+	return
+}
+
+func (t *teeReadCloser) Close() error {
+	return t.r.Close()
+}
+
 // listen for incomming connections on l and proxy each one to the outside world, while sending
 // information about the request/response pairs to all HTTP listeners
 func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
@@ -123,16 +148,13 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 
 			verbosef("reading request sent to %v ...", conn.LocalAddr())
 
-			// read the HTTP request
+			// read the HTTP request (TODO: support HTTP/2 using golang.org/x/net/http2)
 			req, err := http.ReadRequest(bufio.NewReader(tlsconn))
 			if err != nil {
 				errorf("error reading http request over tls server conn: %v, aborting", err)
 				return
 			}
 			defer req.Body.Close()
-
-			reqcolor := color.New(color.FgBlue, color.Bold)
-			reqcolor.Printf("---> %v %v\n", req.Method, req.URL)
 
 			// the request may contain a relative URL but we need an absolute URL for RoundTrip to know
 			// where to dial
@@ -168,6 +190,10 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 				TLSHandshakeTimeout:   10 * time.Second,
 				ExpectContinueTimeout: 1 * time.Second,
 			}
+
+			// capture the request body into memory for inspection later
+			var reqbody bytes.Buffer
+			req.Body = TeeReadCloser(req.Body, &reqbody)
 
 			// do roundtrip to the actual server in the world -- we use RoundTrip here because
 			// we do not want to follow redirects or accumulate our own cookies
@@ -213,21 +239,25 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 			// resp.Body = io.NopCloser(bytes.NewReader(body))
 			// resp.ContentLength = int64(len(body))
 
-			// make the summary the we will log to disk and expose via the API
-			call := HTTPCall{
-				Request: HTTPRequest{
-					Method: req.Method,
-					URL:    req.URL.String(),
-				},
-				Response: HTTPResponse{
-					Status:     resp.Status,
-					StatusCode: resp.StatusCode,
-					Length:     resp.ContentLength,
-				},
+			resp.Header.Set("x-httptap", serverName)
+
+			// capture the response body into memory for later inspection
+			var respbody bytes.Buffer
+			resp.Body = TeeReadCloser(resp.Body, &respbody)
+
+			// proxy the response from the world back to the subprocess
+			verbosef("replying to %v %v with %v (content length %d) ...", req.Method, req.URL, resp.Status, resp.ContentLength)
+			err = resp.Write(tlsconn)
+			if err != nil {
+				errorf("error writing response to tls server conn: %v", err)
+				return
 			}
 
-			verbosef("notifyHTTP %v %v %v (%d bytes)...", req.Method, req.URL, resp.Status, resp.ContentLength)
-			notifyHTTP(&call)
+			verbosef("finished replying to %v %v (%d bytes) with %v (%d bytes)", req.Method, req.URL, reqbody.Len(), resp.Status, respbody.Len())
+
+			// log the request (do not do this earlier since reqbody may not be compete until now)
+			reqcolor := color.New(color.FgBlue, color.Bold)
+			reqcolor.Printf("---> %v %v\n", req.Method, req.URL)
 
 			// log the response
 			var respcolor *color.Color
@@ -241,19 +271,23 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 			default:
 				respcolor = color.New(color.FgRed)
 			}
-			respcolor.Printf("<--- %v %v (%d bytes)\n", resp.StatusCode, req.URL, resp.ContentLength)
+			respcolor.Printf("<--- %v %v (%d bytes)\n", resp.StatusCode, req.URL, respbody.Len())
 
-			resp.Header.Set("x-httptap", serverName)
-
-			// proxy the response from the world back to the subprocess
-			verbosef("replying to %v %v with %v (%d bytes) ...", req.Method, req.URL, resp.Status, resp.ContentLength)
-			err = resp.Write(tlsconn)
-			if err != nil {
-				errorf("error writing response to tls server conn: %v", err)
-				return
+			// make the summary the we will log to disk and expose via the API
+			call := HTTPCall{
+				Request: HTTPRequest{
+					Method: req.Method,
+					URL:    req.URL.String(),
+				},
+				Response: HTTPResponse{
+					Status:     resp.Status,
+					StatusCode: resp.StatusCode,
+					Length:     int64(respbody.Len()),
+				},
 			}
 
-			verbosef("finished replying to %v %v with %v (%d bytes)", req.Method, req.URL, resp.Status, resp.ContentLength)
+			verbosef("notifying http watchers %v %v %v (%d bytes)...", req.Method, req.URL, resp.Status, resp.ContentLength)
+			notifyHTTP(&call)
 		}()
 	}
 }

@@ -8,7 +8,7 @@ import (
 	"runtime"
 
 	"github.com/alexflint/go-arg"
-	"github.com/monasticacademy/httptap/pkg/overlayroot"
+	"github.com/monasticacademy/nwtrace/pkg/overlayroot"
 )
 
 func Main() error {

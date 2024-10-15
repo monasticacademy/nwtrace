@@ -20,7 +20,7 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/joemiller/certin"
-	"github.com/monasticacademy/httptap/pkg/bindfiles"
+	"github.com/monasticacademy/nwtrace/pkg/bindfiles"
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"

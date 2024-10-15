@@ -8,7 +8,7 @@ import (
 	"runtime"
 
 	"github.com/alexflint/go-arg"
-	"github.com/monasticacademy/httptap/pkg/bindfiles"
+	"github.com/monasticacademy/nwtrace/pkg/bindfiles"
 )
 
 func Main() error {

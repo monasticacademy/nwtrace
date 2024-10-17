@@ -2,11 +2,15 @@
 build:
 	mkdir -p .build
 	go build -o .build/httptap
-	sudo setcap 'cap_net_admin=ep cap_sys_admin=ep' .build/httptap
+	sudo setcap 'cap_net_admin=ep cap_sys_admin=ep cap_dac_override=ep' .build/httptap
 
 bash:
 	make build
 	.build/httptap bash
+
+sudo-bash:
+	make build
+	sudo .build/httptap bash
 
 nonroot-bash:
 	make build

@@ -135,11 +135,6 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 						return nil, fmt.Errorf("error creating on-the-fly certificate for %q: %w", hello.ServerName, err)
 					}
 
-					err = writeCertFile(onthefly.Certificate.Raw, "certificate.crt")
-					if err != nil {
-						errorf("error writing on-the-fly certificate to file: %v, ignoring", err)
-					}
-
 					tlscert := onthefly.TLSCertificate()
 					return &tlscert, nil
 				},

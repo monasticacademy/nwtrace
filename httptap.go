@@ -20,7 +20,7 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/joemiller/certin"
-	"github.com/monasticacademy/nwtrace/pkg/bindfiles"
+	"github.com/monasticacademy/nwtrace/pkg/overlay"
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -74,26 +74,6 @@ func layernames(packet gopacket.Packet) []string {
 	return s
 }
 
-// write an X.509 certificate to a .pem or .crt file
-func writeCertFile(cert []byte, path string) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("error opening pem file for writing: %w", err)
-	}
-	defer f.Close()
-
-	err = pem.Encode(f, &pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: cert,
-	})
-	if err != nil {
-		return fmt.Errorf("error encoding CA to pem: %w", err)
-	}
-
-	verbosef("created %v", path)
-	return nil
-}
-
 var isVerbose bool
 
 func verbose(msg string) {
@@ -122,10 +102,10 @@ func Main() error {
 	var args struct {
 		Verbose bool     `arg:"-v,--verbose"`
 		Stderr  bool     `help:"log to stderr (default is stdout)"`
-		Tun     string   `default:"httptap"`
-		Link    string   `default:"10.1.1.100/24"`
-		Route   string   `default:"0.0.0.0/0"`
-		Gateway string   `default:"10.1.1.1"`
+		Tun     string   `default:"httptap" help:"name of the network device to create"`
+		Link    string   `default:"10.1.1.100/24" help:"IP address of the network interface that the subprocess will see"`
+		Route   string   `default:"0.0.0.0/0" help:"IP address range to route to the internet"`
+		Gateway string   `default:"10.1.1.1" help:"IP address of the gateway that intercepts and proxies network packets"`
 		WebUI   string   `help:"address:port to serve API on"`
 		User    string   `help:"run command as this user (username or id)"`
 		Command []string `arg:"positional"`
@@ -155,11 +135,21 @@ func Main() error {
 	}
 
 	// write the certificate authority to a temporary file
-	caPath := "/tmp/httptap.cert"
-	err = writeCertFile(ca.Certificate.Raw, caPath)
+	caFile, err := os.CreateTemp("", "httptap-*.cert")
 	if err != nil {
-		return err
+		return fmt.Errorf("error creating temporary file for certificate authority pem: %w", err)
 	}
+	defer caFile.Close()
+
+	err = pem.Encode(caFile, &pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: ca.Certificate.Raw,
+	})
+	if err != nil {
+		return fmt.Errorf("error encoding certificate authority to pem file: %w", err)
+	}
+
+	verbosef("created %v", caFile.Name())
 
 	// lock the OS thread because network and mount namespaces are specific to a single OS thread
 	runtime.LockOSThread()
@@ -238,8 +228,7 @@ func Main() error {
 	}
 
 	// overlay resolv.conf
-	resolvConf := fmt.Sprintf("nameserver %s\n", args.Gateway)
-	mount, err := bindfiles.Mount(bindfiles.File("/etc/resolv.conf", []byte(resolvConf)))
+	mount, err := overlay.Mount("/etc", overlay.File("resolv.conf", []byte("nameserver "+args.Gateway+"\n")))
 	if err != nil {
 		return fmt.Errorf("error setting up overlay: %w", err)
 	}
@@ -328,9 +317,9 @@ func Main() error {
 		os.Environ(),
 		"PS1=HTTPTAP # ",
 		"HTTPTAP=1",
-		"CURL_CA_BUNDLE="+caPath,
-		"REQUESTS_CA_BUNDLE="+caPath,
-		"SSL_CERT_FILE="+caPath,
+		"CURL_CA_BUNDLE="+caFile.Name(),
+		"REQUESTS_CA_BUNDLE="+caFile.Name(),
+		"SSL_CERT_FILE="+caFile.Name(),
 	)
 
 	verbose("running subcommand now ================")

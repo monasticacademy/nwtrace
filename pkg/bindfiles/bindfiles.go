@@ -87,17 +87,17 @@ func Mount(files ...*file) (*Remover, error) {
 
 		// make sure the target exists and is a file
 		st, err := os.Stat(file.path)
-		if err != nil {
+		if err != nil && !os.IsNotExist(err) {
 			return &remover, fmt.Errorf("error checking %v: %w", file.path, err)
 		}
-		if !st.Mode().IsRegular() {
+		if err == nil && !st.Mode().IsRegular() {
 			return &remover, fmt.Errorf("%v is not a regular file (found %v)", file.path, st.Mode())
 		}
 
 		// do the bind-mount -- third and fifth parameters below are ignored
 		err = unix.Mount(path, file.path, "==ignored==", unix.MS_BIND, "==ignored==")
 		if err != nil {
-			return &remover, fmt.Errorf("error bind-mounting: %w", err)
+			return &remover, fmt.Errorf("error bind-mounting %v as %v: %w", file.path, path, err)
 		}
 
 		remover.mounts = append(remover.mounts, file.path)

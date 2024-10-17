@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
+	"software.sslmate.com/src/go-pkcs12"
 )
 
 const dumpPacketsToSubprocess = false
@@ -100,15 +102,16 @@ func errorf(fmt string, parts ...interface{}) {
 func Main() error {
 	ctx := context.Background()
 	var args struct {
-		Verbose bool     `arg:"-v,--verbose"`
-		Stderr  bool     `help:"log to stderr (default is stdout)"`
-		Tun     string   `default:"httptap" help:"name of the network device to create"`
-		Link    string   `default:"10.1.1.100/24" help:"IP address of the network interface that the subprocess will see"`
-		Route   string   `default:"0.0.0.0/0" help:"IP address range to route to the internet"`
-		Gateway string   `default:"10.1.1.1" help:"IP address of the gateway that intercepts and proxies network packets"`
-		WebUI   string   `help:"address:port to serve API on"`
-		User    string   `help:"run command as this user (username or id)"`
-		Command []string `arg:"positional"`
+		Verbose   bool     `arg:"-v,--verbose"`
+		Stderr    bool     `help:"log to stderr (default is stdout)"`
+		Tun       string   `default:"httptap" help:"name of the network device to create"`
+		Link      string   `default:"10.1.1.100/24" help:"IP address of the network interface that the subprocess will see"`
+		Route     string   `default:"0.0.0.0/0" help:"IP address range to route to the internet"`
+		Gateway   string   `default:"10.1.1.1" help:"IP address of the gateway that intercepts and proxies network packets"`
+		WebUI     string   `help:"address:port to serve API on"`
+		User      string   `help:"run command as this user (username or id)"`
+		NoOverlay bool     `arg:"--no-overlay" help:"do not mount any overlay filesystems"`
+		Command   []string `arg:"positional"`
 	}
 	arg.MustParse(&args)
 
@@ -134,7 +137,7 @@ func Main() error {
 		return fmt.Errorf("error creating root CA: %w", err)
 	}
 
-	// write the certificate authority to a temporary file
+	// write the certificate authority to a temporary PEM file
 	caFile, err := os.CreateTemp("", "httptap-*.cert")
 	if err != nil {
 		return fmt.Errorf("error creating temporary file for certificate authority pem: %w", err)
@@ -149,7 +152,32 @@ func Main() error {
 		return fmt.Errorf("error encoding certificate authority to pem file: %w", err)
 	}
 
-	verbosef("created %v", caFile.Name())
+	caPath := caFile.Name()
+	caFile.Close()
+
+	verbosef("created %v", caPath)
+
+	// write the certificate authority to a temporary PKCS12 file
+	caFilePKCS12, err := os.CreateTemp("", "httptap-*.pkcs12")
+	if err != nil {
+		return fmt.Errorf("error creating temporary file for certificate authority pem: %w", err)
+	}
+	defer caFilePKCS12.Close()
+
+	truststore, err := pkcs12.Passwordless.EncodeTrustStore([]*x509.Certificate{ca.Certificate}, "")
+	if err != nil {
+		return fmt.Errorf("error encoding certificate authority in pkcs12 format: %w", err)
+	}
+
+	_, err = caFilePKCS12.Write(truststore)
+	if err != nil {
+		return fmt.Errorf("error writing to PKCS12 file: %w", err)
+	}
+
+	caPathPKCS12 := caFilePKCS12.Name()
+	caFilePKCS12.Close()
+
+	verbosef("created %v", caPathPKCS12)
 
 	// lock the OS thread because network and mount namespaces are specific to a single OS thread
 	runtime.LockOSThread()
@@ -227,12 +255,17 @@ func Main() error {
 		return fmt.Errorf("error creating default route: %w", err)
 	}
 
-	// overlay resolv.conf
-	mount, err := overlay.Mount("/etc", overlay.File("resolv.conf", []byte("nameserver "+args.Gateway+"\n")))
-	if err != nil {
-		return fmt.Errorf("error setting up overlay: %w", err)
+	// if /etc/ is a directory then set up an overlay
+	if st, err := os.Lstat("/etc"); err == nil && st.IsDir() && !args.NoOverlay {
+		log.Println("overlaying /etc ...")
+
+		// overlay resolv.conf
+		mount, err := overlay.Mount("/etc", overlay.File("resolv.conf", []byte("nameserver "+args.Gateway+"\n")))
+		if err != nil {
+			return fmt.Errorf("error setting up overlay: %w", err)
+		}
+		defer mount.Remove()
 	}
-	defer mount.Remove()
 
 	// switch user and group if requested
 	if args.User != "" {
@@ -317,9 +350,11 @@ func Main() error {
 		os.Environ(),
 		"PS1=HTTPTAP # ",
 		"HTTPTAP=1",
-		"CURL_CA_BUNDLE="+caFile.Name(),
-		"REQUESTS_CA_BUNDLE="+caFile.Name(),
-		"SSL_CERT_FILE="+caFile.Name(),
+		"CURL_CA_BUNDLE="+caPath,
+		"REQUESTS_CA_BUNDLE="+caPath,
+		"SSL_CERT_FILE="+caPath,
+		"_JAVA_OPTIONS=-Djavax.net.ssl.trustStore="+caPathPKCS12,
+		"JDK_JAVA_OPTIONS=-Djavax.net.ssl.trustStore="+caPathPKCS12,
 	)
 
 	verbose("running subcommand now ================")

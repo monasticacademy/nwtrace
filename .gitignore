@@ -3,6 +3,7 @@
 .vscode/
 *.crt
 *.pem
+*.class
 
 **/secrets/*
 !**/secrets/*.encrypted

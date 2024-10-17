@@ -85,6 +85,11 @@ test-with-gcloud:
 	make build
 	.build/httptap -- gcloud compute instances list
 
+test-with-java:
+	rm -rf out
+	make build
+	.build/httptap -- java Example
+
 netcat-experiment:
 	netcat localhost 11223 < /dev/null
 

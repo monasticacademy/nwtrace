@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Test</title>
+</head>
+
+<body>
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            console.log("creating event source...");
+            const stream = new EventSource('/api/calls');
+            stream.onmessage = (event) => {
+                console.log("onmessage...");
+                const payload = JSON.parse(event.data);
+                console.log(payload);
+            };
+            stream.onerror = (err) => {
+                console.error("error reading calls from backend:", err);
+            };
+        });
+    </script>
+</body>
+
+</html>

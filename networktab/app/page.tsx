@@ -1,13 +1,18 @@
 'use client'
 
-import Image from "next/image";
-import styles from "./page.module.css";
 import { useEffect, useState } from "react";
 
 type Request = {
   method: string;
   url: string;
+  host: string;
+  content_type: string;
 };
+
+function path(r: Request): string {
+  let u = new URL(r.url);
+  return u.pathname;
+}
 
 type Response = {
   status: string;
@@ -26,7 +31,7 @@ export default function Home() {
 
   // useEffect means react will run the inner function once whenever the listed dependencies change
   useEffect(() => {
-    const stream = new EventSource('http://localhost:5000/api/calls');
+    const stream = new EventSource('/api/calls');
     stream.onmessage = (event) => {
       const payload: Call = JSON.parse(event.data);
       setCalls((calls) => [...calls, payload]);
@@ -34,7 +39,10 @@ export default function Home() {
     stream.onerror = (err) => {
       console.error("error reading calls from backend:", err);
     };
-    return () => stream.close();
+    return () => {
+      console.log("closing event source");
+      stream.close();
+    };
   }, []);
 
   return (
@@ -63,14 +71,14 @@ export default function Home() {
           </tr>
         </thead>
         <tbody>
-          {calls.map(call => (
-            <tr>
+          {calls.map((call, index) => (
+            <tr key={index}>
               <td>{call.response.status}</td>
               <td>{call.request.method}</td>
-              <td>localhost:3000</td>
-              <td>layout.css</td>
-              <td>JSON</td>
-              <td>373 kB</td>
+              <td>{call.request.host}</td>
+              <td>{path(call.request)}</td>
+              <td>{call.request.content_type}</td>
+              <td>{call.total_bytes}</td>
               <td>{call.response.size}</td>
             </tr>
           ))}

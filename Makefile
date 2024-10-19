@@ -46,10 +46,10 @@ test-with-dig-explicit-nameserver: build
 test-with-oci: build
 	.build/httptap -- oci ce cluster generate-token --region us-ashburn-1 --cluster-id ocid1.cluster.oc1.iad.aaaaaaaauluvhw2v2emhebn4h724eedou76nhacixlczbj4emc52m44j4asq
 
-test-with-sleep-forever: build
+test-with-webui-sleep-forever: build
 	.build/httptap --webui :5000 -- sleep infinity
 
-test-with-curl-loop: build
+test-with-webui-curl-loop: build
 	.build/httptap --webui :5000 -- bash -c "while true; do echo "curling..."; curl -s https://www.example.com > out; sleep 1; done"
 
 test-with-netcat-11223: build

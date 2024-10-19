@@ -19,14 +19,17 @@ import (
 
 // HTTPCall models the information about an HTTP request/response that is exposed over the API and serialized to disk
 type HTTPCall struct {
-	Request  HTTPRequest  `json:"request"`
-	Response HTTPResponse `json:"response"`
+	Request    HTTPRequest  `json:"request"`
+	Response   HTTPResponse `json:"response"`
+	TotalBytes int64        `json:"total_bytes"`
 }
 
 // HTTPRequest models the information about an HTTP request that is exposed over the API and serialized to disk
 type HTTPRequest struct {
-	Method string
-	URL    string
+	Method      string `json:"method"`
+	URL         string `json:"url"`
+	Host        string `json:"host"`
+	ContentType string `json:"content_type"`
 }
 
 // HTTPResponse models the information about an HTTP request that is exposed over the API and serialized to disk
@@ -105,6 +108,24 @@ func (t *teeReadCloser) Close() error {
 	return t.r.Close()
 }
 
+// CountBytesConn is a net.Conn that counts bytes read and written
+type countBytesConn struct {
+	net.Conn
+	read, written int64
+}
+
+func (conn *countBytesConn) Read(b []byte) (int, error) {
+	n, err := conn.Conn.Read(b)
+	conn.read += int64(n)
+	return n, err
+}
+
+func (conn *countBytesConn) Write(b []byte) (int, error) {
+	n, err := conn.Conn.Write(b)
+	conn.written += int64(n)
+	return n, err
+}
+
 // listen for incomming connections on l and proxy each one to the outside world, while sending
 // information about the request/response pairs to all HTTP listeners
 func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
@@ -121,9 +142,12 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 			defer handlePanic()
 			defer conn.Close()
 
-			var serverName string
+			// wrap the connection with a byte counter
+			counts := countBytesConn{Conn: conn}
+			conn = &counts
 
 			// create a tls server with certificates generated on-the-fly from our root CA
+			var serverName string
 			tlsconn := tls.Server(conn, &tls.Config{
 				GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 					verbosef("got challenge for %q", hello.ServerName)
@@ -212,28 +236,6 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 			}
 			defer resp.Body.Close()
 
-			// read the body into memory
-			// body, err := io.ReadAll(resp.Body)
-			// if err != nil {
-			// 	errbody := []byte(err.Error())
-			// 	resp = &http.Response{
-			// 		Proto:         req.Proto,
-			// 		ProtoMajor:    req.ProtoMajor,
-			// 		ProtoMinor:    req.ProtoMinor,
-			// 		Status:        http.StatusText(http.StatusBadGateway),
-			// 		StatusCode:    http.StatusBadGateway,
-			// 		Header:        make(http.Header),
-			// 		ContentLength: int64(len(errbody)),
-			// 		Body:          io.NopCloser(bytes.NewReader(errbody)),
-			// 	}
-
-			// 	errorf("error reading response %v: %v", dialTo, err)
-			// }
-
-			// overwrite the body with an in-memory reader
-			// resp.Body = io.NopCloser(bytes.NewReader(body))
-			// resp.ContentLength = int64(len(body))
-
 			resp.Header.Set("x-httptap", serverName)
 
 			// capture the response body into memory for later inspection
@@ -278,14 +280,17 @@ func proxyHTTPS(l net.Listener, root *certin.KeyAndCert) {
 			// make the summary the we will log to disk and expose via the API
 			call := HTTPCall{
 				Request: HTTPRequest{
-					Method: req.Method,
-					URL:    req.URL.String(),
+					Method:      req.Method,
+					URL:         req.URL.String(),
+					Host:        req.Host,
+					ContentType: req.Header.Get("Content-Type"),
 				},
 				Response: HTTPResponse{
 					Status:     resp.Status,
 					StatusCode: resp.StatusCode,
 					Length:     int64(respbody.Len()),
 				},
+				TotalBytes: counts.read + counts.written,
 			}
 
 			verbosef("notifying http watchers %v %v %v (%d bytes)...", req.Method, req.URL, resp.Status, resp.ContentLength)

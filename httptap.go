@@ -108,7 +108,7 @@ func Main() error {
 		Link      string   `default:"10.1.1.100/24" help:"IP address of the network interface that the subprocess will see"`
 		Route     string   `default:"0.0.0.0/0" help:"IP address range to route to the internet"`
 		Gateway   string   `default:"10.1.1.1" help:"IP address of the gateway that intercepts and proxies network packets"`
-		WebUI     string   `help:"address:port to serve API on"`
+		WebUI     string   `help:"address and port to serve API on"`
 		User      string   `help:"run command as this user (username or id)"`
 		NoOverlay bool     `arg:"--no-overlay" help:"do not mount any overlay filesystems"`
 		Command   []string `arg:"positional"`
@@ -316,6 +316,7 @@ func Main() error {
 				w.Header().Set("Access-Control-Allow-Origin", "*")
 				w.Header().Set("Access-Control-Expose-Headers", "Content-Type")
 				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Content-Encoding", "none") // this is critical for the nextjs dev server to proxy this correctly
 				w.Header().Set("Cache-Control", "no-cache")
 				w.Header().Set("Connection", "keep-alive")
 				w.WriteHeader(http.StatusOK)

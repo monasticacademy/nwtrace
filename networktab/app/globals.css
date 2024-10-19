@@ -156,6 +156,10 @@ main {
       tr:nth-child(odd) {
         background-color: rgba(0, 0, 0, .01);
       }
+
+      tr.selected {
+        background-color: blue;
+      }
     }
   }
 }

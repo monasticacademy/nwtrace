@@ -22,12 +22,37 @@ type Response = {
 type Call = {
   request: Request;
   response: Response;
+  total_bytes: number;
 };
 
 export type Calls = Call[];
 
+function Row(props) {
+  const call: Call = props.call;
+  const selected: boolean = props.selected;
+  const onClick = props.onClick;
+
+  return (
+    <tr onClick={onClick} className={selected ? "selected": ""}>
+      <td>{call.response.status}</td>
+      <td>{call.request.method}</td>
+      <td>{call.request.host}</td>
+      <td>{path(call.request)}</td>
+      <td>{call.request.content_type}</td>
+      <td>{call.total_bytes}</td>
+      <td>{call.response.size}</td>
+    </tr>
+  )
+}
+
 export default function Home() {
   const [calls, setCalls] = useState<Calls>([]);
+  const [selectedIndex, setSelectedIndex] = useState<number>(-1);
+
+  function selectRow(e: MouseEvent, index: number) {
+    e.preventDefault();
+    setSelectedIndex(index);
+  }
 
   // useEffect means react will run the inner function once whenever the listed dependencies change
   useEffect(() => {
@@ -72,15 +97,7 @@ export default function Home() {
         </thead>
         <tbody>
           {calls.map((call, index) => (
-            <tr key={index}>
-              <td>{call.response.status}</td>
-              <td>{call.request.method}</td>
-              <td>{call.request.host}</td>
-              <td>{path(call.request)}</td>
-              <td>{call.request.content_type}</td>
-              <td>{call.total_bytes}</td>
-              <td>{call.response.size}</td>
-            </tr>
+            <Row key={index} call={call} selected={index == selectedIndex} onClick={(e: MouseEvent) => selectRow(e, index)} />
           ))}
         </tbody>
       </table>

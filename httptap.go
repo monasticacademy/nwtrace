@@ -356,6 +356,7 @@ func Main() error {
 		"SSL_CERT_FILE="+caPath,
 		"_JAVA_OPTIONS=-Djavax.net.ssl.trustStore="+caPathPKCS12,
 		"JDK_JAVA_OPTIONS=-Djavax.net.ssl.trustStore="+caPathPKCS12,
+		"NODE_EXTRA_CA_CERTS="+caPath,
 	)
 
 	verbose("running subcommand now ================")

@@ -64,6 +64,9 @@ test-with-java: build
 test-with-doh: build
 	.build/httptap -- curl --doh-url https://cloudflare-dns.com/dns-query https://www.example.com
 
+test-with-js: build
+	.build/httptap node js-experiment/get.js
+
 netcat-experiment:
 	netcat localhost 11223 < /dev/null
 

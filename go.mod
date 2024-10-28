@@ -14,9 +14,11 @@ require (
 )
 
 require (
+	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/r3labs/sse v0.0.0-20210224172625-26fe804710bc // indirect
+	github.com/rogpeppe/go-internal v1.9.0 // indirect
 	golang.org/x/crypto v0.25.0 // indirect
 	golang.org/x/mod v0.18.0 // indirect
 	golang.org/x/net v0.27.0 // indirect
@@ -31,6 +33,7 @@ require (
 	github.com/alexflint/go-arg v1.5.1
 	github.com/alexflint/go-scalar v1.2.0 // indirect
 	github.com/google/btree v1.1.2 // indirect
+	github.com/kr/pretty v0.3.1
 	github.com/miekg/dns v1.1.62
 	github.com/songgao/packets v0.0.0-20160404182456-549a10cd4091
 	github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8

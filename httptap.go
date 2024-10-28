@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/alexflint/go-arg"
 	"github.com/fatih/color"
@@ -102,16 +103,17 @@ func errorf(fmt string, parts ...interface{}) {
 func Main() error {
 	ctx := context.Background()
 	var args struct {
-		Verbose   bool     `arg:"-v,--verbose"`
-		Stderr    bool     `help:"log to stderr (default is stdout)"`
-		Tun       string   `default:"httptap" help:"name of the network device to create"`
-		Link      string   `default:"10.1.1.100/24" help:"IP address of the network interface that the subprocess will see"`
-		Route     string   `default:"0.0.0.0/0" help:"IP address range to route to the internet"`
-		Gateway   string   `default:"10.1.1.1" help:"IP address of the gateway that intercepts and proxies network packets"`
-		WebUI     string   `help:"address and port to serve API on"`
-		User      string   `help:"run command as this user (username or id)"`
-		NoOverlay bool     `arg:"--no-overlay" help:"do not mount any overlay filesystems"`
-		Command   []string `arg:"positional"`
+		Verbose            bool     `arg:"-v,--verbose"`
+		NoNewUserNamespace bool     `arg:"--no-new-user-namespace" help:"do not create a new user namespace (must be run as root)"`
+		Stderr             bool     `help:"log to stderr (default is stdout)"`
+		Tun                string   `default:"httptap" help:"name of the network device to create"`
+		Link               string   `default:"10.1.1.100/24" help:"IP address of the network interface that the subprocess will see"`
+		Route              string   `default:"0.0.0.0/0" help:"IP address range to route to the internet"`
+		Gateway            string   `default:"10.1.1.1" help:"IP address of the gateway that intercepts and proxies network packets"`
+		WebUI              string   `help:"address and port to serve API on"`
+		User               string   `help:"run command as this user (username or id)"`
+		NoOverlay          bool     `arg:"--no-overlay" help:"do not mount any overlay filesystems"`
+		Command            []string `arg:"positional"`
 	}
 	arg.MustParse(&args)
 
@@ -124,14 +126,50 @@ func Main() error {
 
 	isVerbose = args.Verbose
 
-	// save the working directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("error getting current working directory: %w", err)
-	}
-	_ = cwd
+	// first we re-exec ourselves in a new user namespace
+	if os.Args[0] != "/proc/self/exe" && !args.NoNewUserNamespace {
+		verbosef("re-execing in a new user namespace...")
 
-	// generate a root CA
+		// Here we move to a new user namespace, which is an unpriveleged operation, and which
+		// allows us to do everything else we need to do in unpriveleged mode.
+		//
+		// In a C program, we could run unshare(CLONE_NEWUSER) and directly be in a new user
+		// namespace. In a Go program that is not possible because all Go programs are multithreaded
+		// (even with GOMAXPROCS=1), and unshare(CLONE_NEWUSER) is only available to single-threaded
+		// programs.
+		//
+		// Our best option is then to launch ourselves in a subprocess that is in a new user namespace,
+		// using /proc/self/exe, which contains the executable code for the current process.
+
+		cmd := exec.Command("/proc/self/exe")
+		cmd.Args = append([]string{"/proc/self/exe"}, os.Args[1:]...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Env = os.Environ()
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Cloneflags: syscall.CLONE_NEWUSER,
+			UidMappings: []syscall.SysProcIDMap{{
+				ContainerID: 0,
+				HostID:      os.Getuid(),
+				Size:        1,
+			}},
+			GidMappings: []syscall.SysProcIDMap{{
+				ContainerID: 0,
+				HostID:      os.Getgid(),
+				Size:        1,
+			}},
+		}
+		err := cmd.Run()
+		if err != nil {
+			return fmt.Errorf("error re-exec'ing ourselves in a new user namespace: %w", err)
+		}
+		return nil
+	}
+
+	verbosef("running assuming we are in a user namespace...")
+
+	// generate a root certificate authority
 	ca, err := certin.NewCert(nil, certin.Request{CN: "root CA", IsCA: true})
 	if err != nil {
 		return fmt.Errorf("error creating root CA: %w", err)
@@ -142,6 +180,7 @@ func Main() error {
 	if err != nil {
 		return fmt.Errorf("error creating temporary file for certificate authority pem: %w", err)
 	}
+	defer os.Remove(caFile.Name())
 	defer caFile.Close()
 
 	err = pem.Encode(caFile, &pem.Block{
@@ -163,6 +202,7 @@ func Main() error {
 		return fmt.Errorf("error creating temporary file for certificate authority pem: %w", err)
 	}
 	defer caFilePKCS12.Close()
+	defer os.Remove(caFilePKCS12.Name())
 
 	truststore, err := pkcs12.Passwordless.EncodeTrustStore([]*x509.Certificate{ca.Certificate}, "")
 	if err != nil {
@@ -182,13 +222,6 @@ func Main() error {
 	// lock the OS thread because network and mount namespaces are specific to a single OS thread
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-
-	// save a reference to our initial network namespace so we can get back
-	origns, err := netns.Get()
-	if err != nil {
-		return fmt.Errorf("error getting initial network namespace: %w", err)
-	}
-	defer origns.Close()
 
 	// create a new network namespace
 	newns, err := netns.New()
@@ -257,7 +290,7 @@ func Main() error {
 
 	// if /etc/ is a directory then set up an overlay
 	if st, err := os.Lstat("/etc"); err == nil && st.IsDir() && !args.NoOverlay {
-		log.Println("overlaying /etc ...")
+		verbose("overlaying /etc ...")
 
 		// overlay resolv.conf
 		mount, err := overlay.Mount("/etc", overlay.File("resolv.conf", []byte("nameserver "+args.Gateway+"\n")))
@@ -363,7 +396,6 @@ func Main() error {
 
 	// launch a subprocess -- we are already in the network namespace so nothing special here
 	cmd := exec.Command(args.Command[0])
-	cmd.Dir = cwd // pivot_root will have changed our work dir to /old/...
 	cmd.Args = args.Command
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

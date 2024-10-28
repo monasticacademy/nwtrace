@@ -31,6 +31,10 @@ test-with-curl-monasticacademy: clean
 test-with-curl-pre-resolved: clean
 	go run . -- bash -c "curl -s --resolve example.com:80:93.184.215.14 http://example.com > out"
 
+# currently not owkring
+test-with-wget: clean
+	go run . -- wget https://example.com
+
 test-with-netcat-dns: clean
 	go run . -- bash -c "echo cfc9 0100 0001 0000 0000 0000 0a64 7563 6b64 7563 6b67 6f03 636f 6d00 0001 0001 | xxd -p -r | socat udp4:1.1.1.1:53 - | xxd > out"
 
@@ -66,6 +70,49 @@ test-with-js: clean
 
 test-with-self: clean
 	go run . go run . curl https://www.example.com
+
+test-with-docker: clean
+	mkdir -p .build
+	go build -o .build/httptap
+	docker run \
+		--interactive \
+		--tty \
+		--rm \
+		--volume .:/src \
+		--workdir /src \
+		--cap-add CAP_SYS_ADMIN \
+		--device /dev/net/tun:/dev/net/tun \
+		golang \
+		.build/httptap --no-overlay -- curl -so out https://www.example.com
+
+test-with-docker-alpine: clean
+	mkdir -p .build
+	CGO_ENABLED=0 go build -o .build/httptap
+	docker run \
+		--interactive \
+		--tty \
+		--rm \
+		--volume .:/src \
+		--workdir /src \
+		--cap-add CAP_SYS_ADMIN \
+		--device /dev/net/tun:/dev/net/tun \
+		alpine/curl \
+		.build/httptap --no-overlay -- curl -so out https://www.example.com
+
+test-with-docker-distroless: clean
+	mkdir -p .build
+	CGO_ENABLED=0 go build -o .build/httptap
+	CGO_ENABLED=0 go build -o .build/hi ./hello
+	docker run \
+		--interactive \
+		--tty \
+		--rm \
+		--volume .:/src \
+		--workdir /src \
+		--cap-add CAP_SYS_ADMIN \
+		--device /dev/net/tun:/dev/net/tun \
+		gcr.io/distroless/static-debian12 \
+		.build/httptap --no-overlay -- .build/hi
 
 # Test with running httptap in priveleged mode, and turning off creation of user namespace
 

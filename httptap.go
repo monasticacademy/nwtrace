@@ -25,7 +25,6 @@ import (
 	"github.com/monasticacademy/nwtrace/pkg/overlay"
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
-	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 	"software.sslmate.com/src/go-pkcs12"
 )
@@ -161,6 +160,11 @@ func Main() error {
 			}},
 		}
 		err := cmd.Run()
+		// if the subprocess exited with an error code then do not print any
+		// extra information but do exit with the same code
+		if exiterr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exiterr.ExitCode())
+		}
 		if err != nil {
 			return fmt.Errorf("error re-exec'ing ourselves in a new user namespace: %w", err)
 		}
@@ -224,11 +228,9 @@ func Main() error {
 	defer runtime.UnlockOSThread()
 
 	// create a new network namespace
-	newns, err := netns.New()
-	if err != nil {
+	if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
 		return fmt.Errorf("error creating network namespace: %w", err)
 	}
-	defer newns.Close()
 
 	// create a tun device in the new namespace
 	tun, err := water.New(water.Config{

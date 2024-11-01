@@ -22,11 +22,15 @@ httptap -- python -c "import requests; requests.get('https://monasticacademy.org
 
 It works by running the requested subprocess in a network namespace, and intercepting all traffic, in the spirit of a transparent proxy, but on a per-application level. No daemon is needed or used, and no iptables rules are created or assumed. You do not need to be the root user, nor run `httptap` in any kind of priveleged mode.
 
-The `httptap` application is a static Go binary that runs without dependencies. It should work in the most austere of linux environments. No modifications at all are made to the system, except within isolated, application-scoped namespaces.
+The `httptap` application is a static Go binary that runs without dependencies. No modifications at all are made to the system, except within isolated, application-scoped namespaces. You need access to `/dev/net/tun`, which is the default on some linux systems, and can be given on others with
 
-In order to decrypt HTTPS traffic, the httptap binary creates a certificate authority on-the-fly and injects it into the environment seen by subprocess you are running. Using this certificate it decrypts each HTTP request and relays it to its intended host, in the spirit of a man-in-the-middle attack. It does not process or decrypt any traffic from any other processes on the machine, and does not inject any certificate authorities into the broader system. The certificate is created automatically when the process starts, and is discarded with the process terminates.
+```shell
+sudo chmod a+rw /dev/net/tun
+```
 
-In order to get the subprocess to read the certificate authority created in this way, `httptap` sets various environment variables on the subprocess it runs.
+In order to decrypt TLS traffic, the httptap binary creates a certificate authority on-the-fly and injects it into the environment seen by subprocess. Using this certificate it decrypts each HTTP request and relays it to its intended host. It does not process or decrypt any traffic from any other processes on the machine, and does not inject any certificate authorities into the broader system. The certificate is created automatically when the process starts, and is discarded with the process terminates.
+
+In order to get the subprocess to read the certificate authority created in this way, `httptap` sets several environment variables on the subprocess it runs.
 
 If you can run `<some command>` on your shell, then you should also be able to run `httptap <some command>`. There is no need to containerize or otherwise prepare any kind of isolated environment to run a command. Httptap runs `<some command>` in an isolated network namespace, but it does not use a container or any kind, so the process has access to the broader filesystem just as if it were run directly.
 

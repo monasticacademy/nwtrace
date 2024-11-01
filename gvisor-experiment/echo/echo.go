@@ -65,10 +65,6 @@ func echo(wq *waiter.Queue, ep tcpip.Endpoint) {
 	wq.EventRegister(&waitEntry)
 	defer wq.EventUnregister(&waitEntry)
 
-	w := endpointWriter{
-		ep: ep,
-	}
-
 	for {
 		var buf bytes.Buffer
 		if _, err := ep.Read(&buf, tcpip.ReadOptions{}); err != nil {
@@ -80,11 +76,7 @@ func echo(wq *waiter.Queue, ep tcpip.Endpoint) {
 			return
 		}
 
-		log.Printf("echoing %q", buf.String())
-
-		if _, err := w.Write(buf.Bytes()); err != nil {
-			return
-		}
+		log.Printf("received %q", buf.String())
 	}
 }
 
@@ -256,18 +248,15 @@ func Main() error {
 	}
 
 	// set up a route table that routes everything to us
-	s.SetRouteTable([]tcpip.Route{
-		{
-			Destination: subnet,
-			NIC:         1,
-		},
-	})
+	s.SetRouteTable([]tcpip.Route{{
+		Destination: subnet,
+		NIC:         1,
+	}})
 
 	var wq waiter.Queue
 
 	// create TCP endpoint, bind it, then start listening
 	ep, e := s.NewEndpoint(tcp.ProtocolNumber, proto, &wq)
-	//ep, e := s.NewRawEndpoint(tcp.ProtocolNumber, header.IPv4ProtocolNumber, &wq, true)
 	if e != nil {
 		return fmt.Errorf("error creating a raw endpoint: %w", err)
 	}

@@ -22,7 +22,7 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/joemiller/certin"
-	"github.com/monasticacademy/nwtrace/pkg/overlay"
+	"github.com/monasticacademy/httptap/pkg/overlay"
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"

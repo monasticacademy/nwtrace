@@ -1,4 +1,4 @@
-module github.com/monasticacademy/nwtrace
+module github.com/monasticacademy/httptap
 
 go 1.22.0
 

@@ -1,10 +1,10 @@
 name: Release
 
 on:
-  pull_request:
+  workflow_dispatch:
   push:
     tags:
-      - "*"
+      - "v*"
 
 permissions:
   contents: write
@@ -26,5 +26,5 @@ jobs:
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
-          version: "~> v2"
-          args: release --clean --snapshot
+          version: "~> v2"  # this is the goreleaser version, not httptap version
+          args: release --clean

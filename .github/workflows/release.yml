@@ -28,3 +28,5 @@ jobs:
           distribution: goreleaser
           version: "~> v2"  # this is the goreleaser version, not httptap version
           args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

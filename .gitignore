@@ -9,3 +9,5 @@
 !**/secrets/*.encrypted
 !**/secrets/*.go
 /out
+
+dist/

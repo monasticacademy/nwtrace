@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"log"
 	"net"
@@ -12,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -22,11 +21,12 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/joemiller/certin"
+	"github.com/monasticacademy/httptap/pkg/certfile"
+	"github.com/monasticacademy/httptap/pkg/opensslpaths"
 	"github.com/monasticacademy/httptap/pkg/overlay"
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
-	"software.sslmate.com/src/go-pkcs12"
 )
 
 const dumpPacketsToSubprocess = false
@@ -179,48 +179,36 @@ func Main() error {
 		return fmt.Errorf("error creating root CA: %w", err)
 	}
 
-	// write the certificate authority to a temporary PEM file
-	caFile, err := os.CreateTemp("", "httptap-*.cert")
+	// create a temporary directory
+	tempdir, err := os.MkdirTemp("", "")
 	if err != nil {
-		return fmt.Errorf("error creating temporary file for certificate authority pem: %w", err)
+		return fmt.Errorf("error creating temporary directory: %w", err)
 	}
-	defer os.Remove(caFile.Name())
-	defer caFile.Close()
+	defer os.RemoveAll(tempdir)
 
-	err = pem.Encode(caFile, &pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: ca.Certificate.Raw,
-	})
+	// write certificate authority to PEM file
+	caPath := filepath.Join(tempdir, "ca-certificates.crt")
+	err = certfile.WritePEM(caPath, ca.Certificate)
 	if err != nil {
-		return fmt.Errorf("error encoding certificate authority to pem file: %w", err)
+		return fmt.Errorf("error writing certificate authority to temporary PEM file: %w", err)
 	}
-
-	caPath := caFile.Name()
-	caFile.Close()
-
 	verbosef("created %v", caPath)
 
+	// write certificate authority to another common PEM file
+	caPath2 := filepath.Join(tempdir, "ca-bundle.crt")
+	err = certfile.WritePEM(caPath2, ca.Certificate)
+	if err != nil {
+		return fmt.Errorf("error writing certificate authority to temporary PEM file: %w", err)
+	}
+	verbosef("created %v", caPath2)
+
 	// write the certificate authority to a temporary PKCS12 file
-	caFilePKCS12, err := os.CreateTemp("", "httptap-*.pkcs12")
+	// write certificate authority to PEM file
+	caPathPKCS12 := filepath.Join(tempdir, "ca-certificates.pkcs12")
+	err = certfile.WritePKCS12(caPathPKCS12, ca.Certificate)
 	if err != nil {
-		return fmt.Errorf("error creating temporary file for certificate authority pem: %w", err)
+		return fmt.Errorf("error writing certificate authority to temporary PEM file: %w", err)
 	}
-	defer caFilePKCS12.Close()
-	defer os.Remove(caFilePKCS12.Name())
-
-	truststore, err := pkcs12.Passwordless.EncodeTrustStore([]*x509.Certificate{ca.Certificate}, "")
-	if err != nil {
-		return fmt.Errorf("error encoding certificate authority in pkcs12 format: %w", err)
-	}
-
-	_, err = caFilePKCS12.Write(truststore)
-	if err != nil {
-		return fmt.Errorf("error writing to PKCS12 file: %w", err)
-	}
-
-	caPathPKCS12 := caFilePKCS12.Name()
-	caFilePKCS12.Close()
-
 	verbosef("created %v", caPathPKCS12)
 
 	// lock the OS thread because network and mount namespaces are specific to a single OS thread
@@ -393,6 +381,13 @@ func Main() error {
 		"JDK_JAVA_OPTIONS=-Djavax.net.ssl.trustStore="+caPathPKCS12,
 		"NODE_EXTRA_CA_CERTS="+caPath,
 	)
+
+	// get the name of the environment variable that openssl is configured for
+	// if openssl is not installed or cannot be loaded then this gracefully fails with empty
+	// return value
+	if opensslenv := opensslpaths.DefaultCertDirEnv(); opensslenv != "" {
+		env = append(env, opensslenv+"="+caPath)
+	}
 
 	verbose("running subcommand now ================")
 

@@ -1,8 +1,6 @@
 module github.com/monasticacademy/httptap
 
-go 1.22.0
-
-toolchain go1.22.7
+go 1.23.1
 
 require (
 	github.com/djherbis/buffer v1.2.0
@@ -12,10 +10,12 @@ require (
 	github.com/google/gopacket v1.1.19
 	github.com/joemiller/certin v0.3.5
 	github.com/r3labs/sse v0.0.0-20210224172625-26fe804710bc
+	github.com/xjasonlyu/tun2socks/v2 v2.5.2
 	software.sslmate.com/src/go-pkcs12 v0.5.0
 )
 
 require (
+	github.com/ebitengine/purego v0.8.1 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	golang.org/x/crypto v0.25.0 // indirect
@@ -38,5 +38,5 @@ require (
 	github.com/vishvananda/netns v0.0.4
 	golang.org/x/sys v0.25.0
 	golang.org/x/time v0.5.0 // indirect
-	gvisor.dev/gvisor v0.0.0-20240919183126-f4396f32f786
+	gvisor.dev/gvisor v0.0.0-20240928194204-917bbae826a0
 )

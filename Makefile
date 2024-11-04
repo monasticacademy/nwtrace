@@ -31,7 +31,7 @@ test-with-curl-monasticacademy: clean
 test-with-curl-pre-resolved: clean
 	go run . -- bash -c "curl -s --resolve example.com:80:93.184.215.14 http://example.com > out"
 
-# currently not owkring
+# currently not working
 test-with-wget: clean
 	go run . -- wget https://example.com
 

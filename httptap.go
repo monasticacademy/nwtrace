@@ -382,11 +382,17 @@ func Main() error {
 		"NODE_EXTRA_CA_CERTS="+caPath,
 	)
 
-	// get the name of the environment variable that openssl is configured for
+	// get the name of the environment variable that openssl is configured to read
 	// if openssl is not installed or cannot be loaded then this gracefully fails with empty
 	// return value
-	if opensslenv := opensslpaths.DefaultCertDirEnv(); opensslenv != "" {
+	if opensslenv := opensslpaths.DefaultCertFileEnv(); opensslenv != "" {
 		env = append(env, opensslenv+"="+caPath)
+		verbosef("openssl is installed and configured to read %q", opensslenv)
+	}
+
+	if opensslenv := opensslpaths.DefaultCertDirEnv(); opensslenv != "" {
+		env = append(env, opensslenv+"="+tempdir)
+		verbosef("openssl is installed and configured to read %q", opensslenv)
 	}
 
 	verbose("running subcommand now ================")

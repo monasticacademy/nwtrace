@@ -20,10 +20,10 @@ test-with-netcat-http: clean
 	go run . -- bash -c "printf 'GET / HTTP/1.1\r\nHOST: example.com\r\nUser-Agent: nc\r\n\r\n' | nc 93.184.215.14 80 > out"
 
 test-with-curl: clean
-	go run . -v -- bash -c "curl -s http://example.com > out"
-
-test-with-curl-https: clean
 	go run . -v -- bash -c "curl -s https://example.com > out"
+
+test-with-curl-non-tls: clean
+	go run . -v -- bash -c "curl -s http://example.com > out"
 
 test-with-curl-monasticacademy: clean
 	go run . -- bash -c "curl -sL http://monasticacademy.org > out"

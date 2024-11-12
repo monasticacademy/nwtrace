@@ -5,7 +5,6 @@ import (
 	"io"
 	"net"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,7 +44,7 @@ func (s TCPState) String() string {
 // tcpListener is the interface for the application to intercept TCP connections
 type tcpListener struct {
 	pattern     string
-	connections chan *tcpStream // the tcpStack sends streams here when they are created and they match the pattern above
+	connections chan net.Conn // the tcpStack sends streams here when they are created and they match the pattern above
 }
 
 // Accept accepts an intercepted connection. Later this will implement net.Listener.Accept
@@ -277,83 +276,19 @@ func (s *tcpStream) deliverToApplication(payload []byte) {
 	}
 }
 
-// TCP stack
-
+// tcpStack accepts raw packets and handles TCP connections
 type tcpStack struct {
 	streamsBySrcDst map[string]*tcpStream
 	toSubprocess    chan []byte // data sent to this channel goes to subprocess as raw IPv4 packet
-
-	listenerMu sync.Mutex
-	listeners  []*tcpListener
+	app             *tcpMux
 }
 
-func newTCPStack(toSubprocess chan []byte) *tcpStack {
+func newTCPStack(app *tcpMux, link chan []byte) *tcpStack {
 	return &tcpStack{
 		streamsBySrcDst: make(map[string]*tcpStream),
-		toSubprocess:    toSubprocess,
+		toSubprocess:    link,
+		app:             app,
 	}
-}
-
-// Listen returns a net.Listener that intercepts connections according to a filter pattern.
-//
-// Pattern can a hostname, a :port, a hostname:port, or "*" for everything". For example:
-//   - "example.com"
-//   - "example.com:80"
-//   - ":80"
-//   - "*"
-//
-// Later this will be like net.Listen
-func (s *tcpStack) Listen(pattern string) net.Listener {
-	s.listenerMu.Lock()
-	defer s.listenerMu.Unlock()
-
-	listener := tcpListener{pattern: pattern, connections: make(chan *tcpStream, 64)}
-	s.listeners = append(s.listeners, &listener)
-	return &listener
-}
-
-// HandleFunc calls the handler each time a new connection is intercepted mattching the
-// given filter pattern.
-//
-// Pattern can a hostname, a :port, a hostname:port, or "*" for everything". For example:
-//   - "example.com"
-//   - "example.com:80"
-//   - ":80"
-//   - "*"
-//
-// Later this will be like net.Listen
-func (s *tcpStack) HandleFunc(pattern string, handler tcpHandlerFunc) {
-	l := s.Listen(pattern)
-	go func() {
-		defer l.Close()
-		for {
-			conn, err := l.Accept()
-			if err != nil {
-				verbosef("accept returned errror: %v, exiting HandleFunc(%v)", err, pattern)
-				return
-			}
-
-			go handler(conn)
-		}
-	}()
-}
-
-type tcpHandlerFunc func(conn net.Conn)
-
-// notifyListeners is called when a new stream is created. It finds the first listener
-// that will accept the given stream. It never blocks.
-func (s *tcpStack) notifyListeners(stream *tcpStream) {
-	s.listenerMu.Lock()
-	defer s.listenerMu.Unlock()
-
-	for _, listener := range s.listeners {
-		if listener.pattern == "*" || listener.pattern == fmt.Sprintf(":%d", stream.world.Port) {
-			listener.connections <- stream
-			return
-		}
-	}
-
-	verbosef("nobody listening for tcp to %v, dropping", stream.world)
 }
 
 func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []byte) {
@@ -370,7 +305,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		// later we will reject everything other than SYN packets sent to a fresh stream
 		stream = newTCPStream(dst, src, s.toSubprocess)
 		s.streamsBySrcDst[srcdst] = stream
-		s.notifyListeners(stream)
+		s.app.notifyListeners(stream)
 	}
 
 	// handle connection establishment

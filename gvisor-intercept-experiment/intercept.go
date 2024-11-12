@@ -166,9 +166,6 @@ func Main() error {
 		return fmt.Errorf("error creating tun device: %w", err)
 	}
 
-	// pull the file descriptor out
-	tunfd := tun.ReadWriteCloser.(*os.File).Fd()
-
 	// find the link for the device we just created
 	link, err := netlink.LinkByName(args.Tun)
 	if err != nil {
@@ -226,7 +223,6 @@ func Main() error {
 	verbose("running subcommand now ================")
 
 	// launch a subprocess -- we are already in the network namespace so nothing special here
-	log.Println("launching subprocess...")
 	cmd := exec.Command(args.Command[0])
 	cmd.Args = args.Command
 	cmd.Stdin = os.Stdin
@@ -238,33 +234,27 @@ func Main() error {
 		return fmt.Errorf("error starting subprocess: %w", err)
 	}
 
-	// parse the mac address
-	log.Println("parsing mac address...")
-	mac, err := net.ParseMAC(args.MAC)
-	if err != nil {
-		return fmt.Errorf("error parsing MAC address %q: %v", args.MAC, err)
-	}
-
-	// Create the stack with ip and tcp protocols, then add a tun-based
-	// NIC and address.
-	log.Println("creating netstack...")
+	// create the stack with ip and tcp protocols
 	s := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
 	})
 
-	// set up software network stack
-	log.Println("getting MTU of TUN device...")
+	// get maximum transmission unit for the tun device
 	mtu, err := rawfile.GetMTU(args.Tun)
 	if err != nil {
 		return fmt.Errorf("error getting MTU: %w", err)
 	}
-	log.Printf("detected MTU of %v", mtu)
+
+	// get mac address for the tun device
+	mac, err := net.ParseMAC(args.MAC)
+	if err != nil {
+		return fmt.Errorf("error parsing MAC address %q: %v", args.MAC, err)
+	}
 
 	// create a link endpoint based on the TUN device
-	log.Println("creating link endpoint...")
-	linkEP, err := fdbased.New(&fdbased.Options{
-		FDs:            []int{int(tunfd)},
+	endpoint, err := fdbased.New(&fdbased.Options{
+		FDs:            []int{int(tun.ReadWriteCloser.(*os.File).Fd())},
 		MTU:            mtu,
 		EthernetHeader: tun.IsTAP(),
 		Address:        tcpip.LinkAddress(mac),
@@ -275,7 +265,6 @@ func Main() error {
 
 	// create and register the TCP forwardedr
 	const maxInFlight = 100 // maximum simultaneous connections
-	log.Println("creating tcp forwarder...")
 	tcpForwarder := tcp.NewForwarder(s, 0, maxInFlight, func(r *tcp.ForwarderRequest) {
 		//defer r.Complete(true)
 		// remote address is the IP address of the subprocess
@@ -285,40 +274,26 @@ func Main() error {
 			r.ID().RemoteAddress, r.ID().RemotePort)
 	})
 
-	log.Println("registering tcp forwarder...")
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 
 	// create the network interface -- tun2socks says this must happen *after* registering the TCP forwarder
-	log.Println("creating NIC...")
 	nic := s.NextNICID()
-	er := s.CreateNIC(nic, linkEP)
+	er := s.CreateNIC(nic, endpoint)
 	if er != nil {
 		return fmt.Errorf("error creating NIC: %v", er)
 	}
 
-	// from tun2socks https://github.com/xjasonlyu/tun2socks/blob/main/core/nic.go#L43
+	// set promiscuous mode (from tun2socks: https://github.com/xjasonlyu/tun2socks/blob/main/core/nic.go#L43)
 	er = s.SetPromiscuousMode(nic, true)
 	if er != nil {
 		return fmt.Errorf("error setting promiscuous mod: %v", er)
 	}
 
-	// parse our IP address
-	// localAddr := net.ParseIP(args.Gateway)
-	// if localAddr == nil {
-	// 	return fmt.Errorf("error parsing IP address: %v", args.Gateway)
-	// }
-
-	// var addrWithPrefix tcpip.AddressWithPrefix
-	// var proto tcpip.NetworkProtocolNumber
-	// if localAddr.To4() != nil {
-	// 	addrWithPrefix = tcpip.AddrFromSlice(localAddr.To4()).WithPrefix()
-	// 	proto = ipv4.ProtocolNumber
-	// } else if localAddr.To16() != nil {
-	// 	addrWithPrefix = tcpip.AddrFromSlice(localAddr.To16()).WithPrefix()
-	// 	proto = ipv6.ProtocolNumber
-	// } else {
-	// 	return fmt.Errorf("unknown IP type: %v", args.Gateway)
-	// }
+	// set spoofing mode (from tun2socks: https://github.com/xjasonlyu/tun2socks/blob/main/core/nic.go#L56)
+	er = s.SetSpoofing(nic, true)
+	if er != nil {
+		return fmt.Errorf("error setting promiscuous mod: %v", er)
+	}
 
 	// how tun2socks sets up the route table:
 	// s.SetRouteTable([]tcpip.Route{
@@ -332,31 +307,7 @@ func Main() error {
 	// 	},
 	// })
 
-	// // configure a protocol address
-	// protocolAddr := tcpip.ProtocolAddress{
-	// 	Protocol:          proto,
-	// 	AddressWithPrefix: addrWithPrefix,
-	// }
-	// if err := s.AddProtocolAddress(1, protocolAddr, stack.AddressProperties{}); err != nil {
-	// 	return fmt.Errorf("AddProtocolAddress(%d, %+v, {}): %s", 1, protocolAddr, err)
-	// }
-
-	// log.Println("creating subnet...")
-	// global := strings.Repeat("\x00", 4) // make this 16 for ipv6
-	// subnet, err := tcpip.NewSubnet(tcpip.AddrFromSlice([]byte(global)), tcpip.MaskFrom(global))
-	// if err != nil {
-	// 	return fmt.Errorf("error creating subnet: %w", err)
-	// }
-
-	// // set up a route table that routes everything to us
-	// log.Println("creating route table...")
-	// s.SetRouteTable([]tcpip.Route{{
-	// 	Destination: subnet,
-	// 	NIC:         nic,
-	// }})
-
 	// wait for subprocess completion
-	log.Println("waiting for subcommand...")
 	err = cmd.Wait()
 	if err != nil {
 		exitError, isExitError := err.(*exec.ExitError)

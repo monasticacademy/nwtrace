@@ -5,8 +5,6 @@ import (
 	"net"
 	"strings"
 	"sync"
-
-	"github.com/google/gopacket/layers"
 )
 
 // mux dispatches TCP connections to listeners according to patterns
@@ -138,54 +136,4 @@ type udpResponder interface {
 
 	// set the destination port in the header for UDP packets sent to Write()
 	SetDestPort(port uint16)
-}
-
-type udpStackResponder struct {
-	stack      *udpStack
-	udpheader  *layers.UDP
-	ipv4header *layers.IPv4
-}
-
-func (r *udpStackResponder) SetSourceIP(ip net.IP) {
-	r.ipv4header.SrcIP = ip
-}
-
-func (r *udpStackResponder) SetSourcePort(port uint16) {
-	r.udpheader.SrcPort = layers.UDPPort(port)
-}
-
-func (r *udpStackResponder) SetDestIP(ip net.IP) {
-	r.ipv4header.DstIP = ip
-}
-
-func (r *udpStackResponder) SetDestPort(port uint16) {
-	r.udpheader.DstPort = layers.UDPPort(port)
-}
-
-func (r *udpStackResponder) Write(payload []byte) (int, error) {
-	// set checksums and lengths
-	r.udpheader.SetNetworkLayerForChecksum(r.ipv4header)
-
-	// log
-	verbosef("sending udp packet to subprocess: %s", summarizeUDP(r.ipv4header, r.udpheader, payload))
-
-	// serialize the data
-	packet, err := serializeUDP(r.ipv4header, r.udpheader, payload, r.stack.buf)
-	if err != nil {
-		return 0, fmt.Errorf("error serializing UDP packet: %w", err)
-	}
-
-	// make a copy because the same buffer will be re-used
-	cp := make([]byte, len(packet))
-	copy(cp, packet)
-
-	// send to the subprocess channel non-blocking
-	select {
-	case r.stack.toSubprocess <- cp:
-	default:
-		return 0, fmt.Errorf("channel for sending udp to subprocess would have blocked")
-	}
-
-	// return number of bytes passed in, not number of bytes sent to output
-	return len(payload), nil
 }

@@ -417,14 +417,14 @@ func Main() error {
 	// when the subprocess completes
 	verbosef("listening on %v", args.Tun)
 	// the application-level thing is the mux, which distributes new connections according to patterns
-	var mux tcpMux
+	var mux mux
 
 	// instantiate the tcp and udp stacks
 	tcpstack := newTCPStack(&mux, toSubprocess)
-	udpstack := newUDPStack(toSubprocess)
+	udpstack := newUDPStack(&mux, toSubprocess)
 
 	// handle DNS queries by calling net.Resolve
-	udpstack.HandleFunc(":53", func(w udpResponder, p *udpPacket) {
+	mux.HandleUDP(":53", func(w udpResponder, p *udpPacket) {
 		handleDNS(context.Background(), w, p.payload)
 	})
 

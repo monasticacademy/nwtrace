@@ -280,10 +280,10 @@ func (s *tcpStream) deliverToApplication(payload []byte) {
 type tcpStack struct {
 	streamsBySrcDst map[string]*tcpStream
 	toSubprocess    chan []byte // data sent to this channel goes to subprocess as raw IPv4 packet
-	app             *tcpMux
+	app             *mux
 }
 
-func newTCPStack(app *tcpMux, link chan []byte) *tcpStack {
+func newTCPStack(app *mux, link chan []byte) *tcpStack {
 	return &tcpStack{
 		streamsBySrcDst: make(map[string]*tcpStream),
 		toSubprocess:    link,
@@ -305,7 +305,7 @@ func (s *tcpStack) handlePacket(ipv4 *layers.IPv4, tcp *layers.TCP, payload []by
 		// later we will reject everything other than SYN packets sent to a fresh stream
 		stream = newTCPStream(dst, src, s.toSubprocess)
 		s.streamsBySrcDst[srcdst] = stream
-		s.app.notifyListeners(stream)
+		s.app.notifyTCP(stream)
 	}
 
 	// handle connection establishment

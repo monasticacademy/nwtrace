@@ -416,33 +416,33 @@ func Main() error {
 	// start a goroutine to process packets from the subprocess -- this will be killed
 	// when the subprocess completes
 	verbosef("listening on %v", args.Tun)
+	// the application-level thing is the mux, which distributes new connections according to patterns
+	var mux tcpMux
+
+	// instantiate the tcp and udp stacks
+	tcpstack := newTCPStack(&mux, toSubprocess)
+	udpstack := newUDPStack(toSubprocess)
+
+	// handle DNS queries by calling net.Resolve
+	udpstack.HandleFunc(":53", func(w udpResponder, p *udpPacket) {
+		handleDNS(context.Background(), w, p.payload)
+	})
+
+	mux.HandleTCP(":11223", func(conn net.Conn) {
+		fmt.Fprint(conn, "hello 11223\n")
+		conn.Close()
+	})
+
+	// TODO: proxy all other UDP packets to the public internet
+	// go proxyUDP(udppstack.Listen("*"))
+
+	// intercept all https connections on port 443
+	go proxyHTTPS(mux.Listen(":443"), ca)
+
+	// start listening for TCP connections and proxy each one to the world
+	go proxyTCP(mux.Listen("*"))
+
 	go func() {
-		// the application-level thing is the mux, which distributes new connections according to patterns
-		var mux tcpMux
-
-		// instantiate the tcp and udp stacks
-		tcpstack := newTCPStack(&mux, toSubprocess)
-		udpstack := newUDPStack(toSubprocess)
-
-		// handle DNS queries by calling net.Resolve
-		udpstack.HandleFunc(":53", func(w udpResponder, p *udpPacket) {
-			handleDNS(context.Background(), w, p.payload)
-		})
-
-		mux.HandleTCP(":11223", func(conn net.Conn) {
-			fmt.Fprint(conn, "hello 11223\n")
-			conn.Close()
-		})
-
-		// TODO: proxy all other UDP packets to the public internet
-		// go proxyUDP(udppstack.Listen("*"))
-
-		// intercept all https connections on port 443
-		go proxyHTTPS(mux.Listen(":443"), ca)
-
-		// start listening for TCP connections and proxy each one to the world
-		go proxyTCP(mux.Listen("*"))
-
 		// start reading raw bytes from the tunnel device and sending them to the appropriate stack
 		buf := make([]byte, 1500)
 		for {

@@ -20,12 +20,15 @@ import (
 	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/rawfile"
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/fdbased"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
+	"gvisor.dev/gvisor/pkg/waiter"
 )
 
 // tcpip.Error does not implement error! Need to wrap
@@ -266,12 +269,30 @@ func Main() error {
 	// create and register the TCP forwardedr
 	const maxInFlight = 100 // maximum simultaneous connections
 	tcpForwarder := tcp.NewForwarder(s, 0, maxInFlight, func(r *tcp.ForwarderRequest) {
-		//defer r.Complete(true)
 		// remote address is the IP address of the subprocess
 		// local address is IP address that the subprocess was trying to reach
 		log.Printf("at TCP forwarder: %v:%v => %v:%v",
-			r.ID().LocalAddress, r.ID().LocalPort,
-			r.ID().RemoteAddress, r.ID().RemotePort)
+			r.ID().RemoteAddress, r.ID().RemotePort,
+			r.ID().LocalAddress, r.ID().LocalPort)
+
+		// send a SYN+ACK in response to the SYN
+		var wq waiter.Queue
+		ep, err := r.CreateEndpoint(&wq)
+		if err != nil {
+			log.Printf("error accepting connection: %v", err)
+			r.Complete(true)
+			return
+		}
+		defer r.Complete(false)
+
+		// TODO: set keepalive count, keepalive interval, receive buffer size, send buffer size, like this:
+		//   https://github.com/xjasonlyu/tun2socks/blob/main/core/tcp.go#L83
+
+		// create an adapter that makes an adapter into a net.Conn
+		conn := gonet.NewTCPConn(&wq, ep)
+		defer conn.Close()
+
+		fmt.Fprint(conn, "hello gvisor")
 	})
 
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
@@ -295,17 +316,17 @@ func Main() error {
 		return fmt.Errorf("error setting promiscuous mod: %v", er)
 	}
 
-	// how tun2socks sets up the route table:
-	// s.SetRouteTable([]tcpip.Route{
-	// 	{
-	// 		Destination: header.IPv4EmptySubnet,
-	// 		NIC:         nic,
-	// 	},
-	// 	{
-	// 		Destination: header.IPv6EmptySubnet,
-	// 		NIC:         nic,
-	// 	},
-	// })
+	// set up the route table (without this we will not be able to send packets to the subprocess)
+	s.SetRouteTable([]tcpip.Route{
+		{
+			Destination: header.IPv4EmptySubnet,
+			NIC:         nic,
+		},
+		{
+			Destination: header.IPv6EmptySubnet,
+			NIC:         nic,
+		},
+	})
 
 	// wait for subprocess completion
 	err = cmd.Wait()

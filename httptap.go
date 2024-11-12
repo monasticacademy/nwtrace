@@ -67,6 +67,48 @@ func copyToDevice(ctx context.Context, dst *water.Interface, src chan []byte) er
 	}
 }
 
+// readFromDevice parses packets from a tun device and delivers them to the TCP and UDP stacks
+func readFromDevice(ctx context.Context, tun *water.Interface, tcpstack *tcpStack, udpstack *udpStack) error {
+	// start reading raw bytes from the tunnel device and sending them to the appropriate stack
+	buf := make([]byte, 1500)
+	for {
+		// read a packet (TODO: implement non-blocking read on the file descriptor, check for context cancellation)
+		n, err := tun.Read(buf)
+		if err != nil {
+			errorf("error reading a packet from tun: %v, ignoring", err)
+			continue
+		}
+
+		packet := gopacket.NewPacket(buf[:n], layers.LayerTypeIPv4, gopacket.Default)
+		ipv4, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4)
+		if !ok {
+			continue
+		}
+
+		tcp, isTCP := packet.Layer(layers.LayerTypeTCP).(*layers.TCP)
+		udp, isUDP := packet.Layer(layers.LayerTypeUDP).(*layers.UDP)
+		if !isTCP && !isUDP {
+			continue
+		}
+
+		if dumpPacketsFromSubprocess {
+			verbose(strings.Repeat("\n", 3))
+			verbose(strings.Repeat("=", 80))
+			verbose("From subprocess:")
+			verbose(packet.Dump())
+		}
+
+		if isTCP {
+			verbosef("received from subprocess: %v", summarizeTCP(ipv4, tcp, tcp.Payload))
+			tcpstack.handlePacket(ipv4, tcp, tcp.Payload)
+		}
+		if isUDP {
+			verbosef("received from subprocess: %v", summarizeUDP(ipv4, udp, udp.Payload))
+			udpstack.handlePacket(ipv4, udp, udp.Payload)
+		}
+	}
+}
+
 // layernames makes a one-line list of layers in a packet
 func layernames(packet gopacket.Packet) []string {
 	var s []string
@@ -416,12 +458,9 @@ func Main() error {
 	// start a goroutine to process packets from the subprocess -- this will be killed
 	// when the subprocess completes
 	verbosef("listening on %v", args.Tun)
+
 	// the application-level thing is the mux, which distributes new connections according to patterns
 	var mux mux
-
-	// instantiate the tcp and udp stacks
-	tcpstack := newTCPStack(&mux, toSubprocess)
-	udpstack := newUDPStack(&mux, toSubprocess)
 
 	// handle DNS queries by calling net.Resolve
 	mux.HandleUDP(":53", func(w udpResponder, p *udpPacket) {
@@ -442,45 +481,12 @@ func Main() error {
 	// start listening for TCP connections and proxy each one to the world
 	go proxyTCP(mux.Listen("*"))
 
-	go func() {
-		// start reading raw bytes from the tunnel device and sending them to the appropriate stack
-		buf := make([]byte, 1500)
-		for {
-			n, err := tun.Read(buf)
-			if err != nil {
-				errorf("error reading a packet from tun: %v, ignoring", err)
-				continue
-			}
+	// instantiate the tcp and udp stacks
+	tcpstack := newTCPStack(&mux, toSubprocess)
+	udpstack := newUDPStack(&mux, toSubprocess)
 
-			packet := gopacket.NewPacket(buf[:n], layers.LayerTypeIPv4, gopacket.Default)
-			ipv4, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4)
-			if !ok {
-				continue
-			}
-
-			tcp, isTCP := packet.Layer(layers.LayerTypeTCP).(*layers.TCP)
-			udp, isUDP := packet.Layer(layers.LayerTypeUDP).(*layers.UDP)
-			if !isTCP && !isUDP {
-				continue
-			}
-
-			if dumpPacketsFromSubprocess {
-				verbose(strings.Repeat("\n", 3))
-				verbose(strings.Repeat("=", 80))
-				verbose("From subprocess:")
-				verbose(packet.Dump())
-			}
-
-			if isTCP {
-				verbosef("received from subprocess: %v", summarizeTCP(ipv4, tcp, tcp.Payload))
-				tcpstack.handlePacket(ipv4, tcp, tcp.Payload)
-			}
-			if isUDP {
-				verbosef("received from subprocess: %v", summarizeUDP(ipv4, udp, udp.Payload))
-				udpstack.handlePacket(ipv4, udp, udp.Payload)
-			}
-		}
-	}()
+	// start reading packets from the tun device and delivering them to the TCP and UDP stacks
+	go readFromDevice(ctx, tun, tcpstack, udpstack)
 
 	// wait for subprocess completion
 	err = cmd.Wait()

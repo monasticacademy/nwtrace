@@ -27,6 +27,17 @@ import (
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+	"gvisor.dev/gvisor/pkg/rawfile"
+	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
+	"gvisor.dev/gvisor/pkg/tcpip/link/fdbased"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
+	"gvisor.dev/gvisor/pkg/waiter"
 )
 
 const dumpPacketsToSubprocess = false
@@ -151,9 +162,11 @@ func Main() error {
 		Link               string   `default:"10.1.1.100/24" help:"IP address of the network interface that the subprocess will see"`
 		Route              string   `default:"0.0.0.0/0" help:"IP address range to route to the internet"`
 		Gateway            string   `default:"10.1.1.1" help:"IP address of the gateway that intercepts and proxies network packets"`
+		MAC                string   `default:"aa:00:01:01:01:01" help:"MAC address of the gateway as seen by the subprocess"`
 		WebUI              string   `help:"address and port to serve API on"`
 		User               string   `help:"run command as this user (username or id)"`
 		NoOverlay          bool     `arg:"--no-overlay" help:"do not mount any overlay filesystems"`
+		Stack              string   `default:"gvisor" help:"'gvisor' or 'homegrown'"`
 		Command            []string `arg:"positional"`
 	}
 	arg.MustParse(&args)
@@ -476,17 +489,112 @@ func Main() error {
 	// go proxyUDP(udppstack.Listen("*"))
 
 	// intercept all https connections on port 443
-	go proxyHTTPS(mux.Listen(":443"), ca)
+	go proxyHTTPS(mux.ListenTCP(":443"), ca)
 
 	// start listening for TCP connections and proxy each one to the world
-	go proxyTCP(mux.Listen("*"))
+	go proxyTCP(mux.ListenTCP("*"))
 
-	// instantiate the tcp and udp stacks
-	tcpstack := newTCPStack(&mux, toSubprocess)
-	udpstack := newUDPStack(&mux, toSubprocess)
+	switch strings.ToLower(args.Stack) {
+	case "homegrown":
+		// instantiate the tcp and udp stacks and start reading packets from the TUN device
+		tcpstack := newTCPStack(&mux, toSubprocess)
+		udpstack := newUDPStack(&mux, toSubprocess)
+		go readFromDevice(ctx, tun, tcpstack, udpstack)
+	case "gvisor":
 
-	// start reading packets from the tun device and delivering them to the TCP and UDP stacks
-	go readFromDevice(ctx, tun, tcpstack, udpstack)
+		// create the stack with udp and tcp protocols
+		s := stack.New(stack.Options{
+			NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
+			TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
+		})
+
+		// get maximum transmission unit for the tun device
+		mtu, err := rawfile.GetMTU(args.Tun)
+		if err != nil {
+			return fmt.Errorf("error getting MTU: %w", err)
+		}
+
+		// get mac address for the tun device
+		// mac, err := net.ParseMAC(args.MAC)
+		// if err != nil {
+		// 	return fmt.Errorf("error parsing MAC address %q: %v", args.MAC, err)
+		// }
+
+		// create a link endpoint based on the TUN device
+		endpoint, err := fdbased.New(&fdbased.Options{
+			FDs: []int{int(tun.ReadWriteCloser.(*os.File).Fd())},
+			MTU: mtu,
+			//EthernetHeader: tun.IsTAP(),
+			//Address:        tcpip.LinkAddress(mac),
+		})
+		if err != nil {
+			return fmt.Errorf("error creating link from tun device file descriptor: %v", err)
+		}
+
+		// create and register the TCP forwardedr
+		const maxInFlight = 100 // maximum simultaneous connections
+		tcpForwarder := tcp.NewForwarder(s, 0, maxInFlight, func(r *tcp.ForwarderRequest) {
+			// remote address is the IP address of the subprocess
+			// local address is IP address that the subprocess was trying to reach
+			log.Printf("at TCP forwarder: %v:%v => %v:%v",
+				r.ID().RemoteAddress, r.ID().RemotePort,
+				r.ID().LocalAddress, r.ID().LocalPort)
+
+			// send a SYN+ACK in response to the SYN
+			var wq waiter.Queue
+			ep, err := r.CreateEndpoint(&wq)
+			if err != nil {
+				log.Printf("error accepting connection: %v", err)
+				r.Complete(true)
+				return
+			}
+			defer r.Complete(false)
+
+			// TODO: set keepalive count, keepalive interval, receive buffer size, send buffer size, like this:
+			//   https://github.com/xjasonlyu/tun2socks/blob/main/core/tcp.go#L83
+
+			// create an adapter that makes an adapter into a net.Conn
+			mux.notifyTCP(gonet.NewTCPConn(&wq, ep))
+			//defer conn.Close()
+			//fmt.Fprint(conn, "hello gvisor")
+		})
+
+		s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
+
+		// create the network interface -- tun2socks says this must happen *after* registering the TCP forwarder
+		nic := s.NextNICID()
+		er := s.CreateNIC(nic, endpoint)
+		if er != nil {
+			return fmt.Errorf("error creating NIC: %v", er)
+		}
+
+		// set promiscuous mode (from tun2socks: https://github.com/xjasonlyu/tun2socks/blob/main/core/nic.go#L43)
+		er = s.SetPromiscuousMode(nic, true)
+		if er != nil {
+			return fmt.Errorf("error activating promiscuous mode: %v", er)
+		}
+
+		// set spoofing mode (from tun2socks: https://github.com/xjasonlyu/tun2socks/blob/main/core/nic.go#L56)
+		er = s.SetSpoofing(nic, true)
+		if er != nil {
+			return fmt.Errorf("error activating spoofing mode: %v", er)
+		}
+
+		// set up the route table (without this we will not be able to send packets to the subprocess)
+		s.SetRouteTable([]tcpip.Route{
+			{
+				Destination: header.IPv4EmptySubnet,
+				NIC:         nic,
+			},
+			{
+				Destination: header.IPv6EmptySubnet,
+				NIC:         nic,
+			},
+		})
+
+	default:
+		return fmt.Errorf("invalid stack %q; valid choices are 'gvisor' or 'homegrown'", args.Stack)
+	}
 
 	// wait for subprocess completion
 	err = cmd.Wait()

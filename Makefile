@@ -29,6 +29,9 @@ test-with-curl-monasticacademy: clean
 	go run . -- bash -c "curl -sL http://monasticacademy.org > out"
 
 test-with-curl-pre-resolved: clean
+	go run . -- bash -c "curl -s --resolve example.com:443:93.184.215.14 https://example.com > out"
+
+test-with-curl-pre-resolved-non-tls: clean
 	go run . -- bash -c "curl -s --resolve example.com:80:93.184.215.14 http://example.com > out"
 
 # currently not working

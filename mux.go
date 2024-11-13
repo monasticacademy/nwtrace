@@ -1,18 +1,17 @@
 package main
 
 import (
-	"fmt"
 	"net"
 	"strings"
 	"sync"
 )
 
 // match a listen pattern to an address string of the form HOST:PORT
-func patternMatches(pattern, hostport string) bool {
+func patternMatches(pattern string, addr net.Addr) bool {
 	if pattern == "*" {
 		return true
 	}
-	if strings.HasPrefix(pattern, ":") && strings.HasSuffix(hostport, pattern) {
+	if strings.HasPrefix(pattern, ":") && strings.HasSuffix(addr.String(), pattern) {
 		return true
 	}
 	return false
@@ -93,7 +92,7 @@ func (s *mux) notifyTCP(stream net.Conn) {
 	defer s.mu.Unlock()
 
 	for _, listener := range s.tcpHandlers {
-		if patternMatches(listener.pattern, stream.LocalAddr().String()) {
+		if patternMatches(listener.pattern, stream.LocalAddr()) {
 			listener.connections <- stream
 			return
 		}
@@ -109,29 +108,17 @@ func (s *mux) notifyUDP(w udpResponder, packet *udpPacket) {
 	defer s.mu.Unlock()
 
 	for _, entry := range s.udpHandlers {
-		if entry.pattern == "*" || entry.pattern == fmt.Sprintf(":%d", packet.udpheader.DstPort) {
+		if patternMatches(entry.pattern, packet.dst) {
 			entry.handler(w, packet)
 			return
 		}
 	}
 
-	verbosef("nobody listening for udp to %v:%v, dropping!", packet.ipv4header.DstIP, packet.udpheader.DstPort)
+	verbosef("nobody listening for udp to %v, dropping!", packet.dst)
 }
 
 // udpResponder is the interface for writing back UDP packets
 type udpResponder interface {
 	// write a UDP packet back to the subprocess
 	Write(payload []byte) (n int, err error)
-
-	// set the source IP in the header for UDP packets sent to Write()
-	SetSourceIP(ip net.IP)
-
-	// set the source port in the header for UDP packets sent to Write()
-	SetSourcePort(port uint16)
-
-	// set the destination IP in the header for UDP packets sent to Write()
-	SetDestIP(ip net.IP)
-
-	// set the destination port in the header for UDP packets sent to Write()
-	SetDestPort(port uint16)
 }

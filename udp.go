@@ -11,9 +11,9 @@ import (
 // UDP packet
 
 type udpPacket struct {
-	ipv4header *layers.IPv4
-	udpheader  *layers.UDP
-	payload    []byte
+	src     net.Addr
+	dst     net.Addr
+	payload []byte
 }
 
 // udpHandlerFunc is a function that receives UDP packets. Each call to response.Write
@@ -66,7 +66,10 @@ func (s *udpStack) handlePacket(ipv4 *layers.IPv4, udp *layers.UDP, payload []by
 	// forward the data to application-level listeners
 	verbosef("got %d udp bytes to %v:%v, delivering to application", len(udp.Payload), ipv4.DstIP, udp.DstPort)
 
-	s.app.notifyUDP(&w, &udpPacket{ipv4, udp, payload})
+	src := net.UDPAddr{IP: ipv4.SrcIP, Port: int(udp.SrcPort)}
+	dst := net.UDPAddr{IP: ipv4.DstIP, Port: int(udp.DstPort)}
+
+	s.app.notifyUDP(&w, &udpPacket{&src, &dst, payload})
 }
 
 // serializeUDP serializes a UDP packet

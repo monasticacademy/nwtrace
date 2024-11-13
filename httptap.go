@@ -384,7 +384,7 @@ func Main() error {
 		// TODO: open listener first so that we can check that it works before proceeding
 		go func() {
 			http.HandleFunc("/api/calls", func(w http.ResponseWriter, r *http.Request) {
-				log.Println("at /api/calls")
+				verbose("at /api/calls")
 
 				// listen for HTTP request/response pairs intercepted by the proxy
 				ch, history := listenHTTP()
@@ -405,7 +405,6 @@ func Main() error {
 				for {
 					select {
 					case httpcall := <-ch:
-						log.Println("sending an event")
 						fmt.Fprint(w, "data: ")
 						json.NewEncoder(w).Encode(httpcall)
 						fmt.Fprint(w, "\n\n")
@@ -536,7 +535,7 @@ func Main() error {
 		tcpForwarder := tcp.NewForwarder(s, 0, maxInFlight, func(r *tcp.ForwarderRequest) {
 			// remote address is the IP address of the subprocess
 			// local address is IP address that the subprocess was trying to reach
-			log.Printf("at TCP forwarder: %v:%v => %v:%v",
+			verbosef("at TCP forwarder: %v:%v => %v:%v",
 				r.ID().RemoteAddress, r.ID().RemotePort,
 				r.ID().LocalAddress, r.ID().LocalPort)
 
@@ -544,7 +543,7 @@ func Main() error {
 			var wq waiter.Queue
 			ep, err := r.CreateEndpoint(&wq)
 			if err != nil {
-				log.Printf("error accepting connection: %v", err)
+				errorf("error accepting connection: %v", err)
 				r.Complete(true)
 				return
 			}
@@ -559,7 +558,50 @@ func Main() error {
 			//fmt.Fprint(conn, "hello gvisor")
 		})
 
+		udpForwarder := udp.NewForwarder(s, func(r *udp.ForwarderRequest) {
+			// remote address is the IP address of the subprocess
+			// local address is IP address that the subprocess was trying to reach
+			verbosef("at UDP forwarder: %v:%v => %v:%v",
+				r.ID().RemoteAddress, r.ID().RemotePort,
+				r.ID().LocalAddress, r.ID().LocalPort)
+
+			// send a SYN+ACK in response to the SYN
+			var wq waiter.Queue
+			ep, err := r.CreateEndpoint(&wq)
+			if err != nil {
+				log.Printf("error accepting connection: %v", err)
+				return
+			}
+
+			// TODO: set keepalive count, keepalive interval, receive buffer size, send buffer size, like this:
+			//   https://github.com/xjasonlyu/tun2socks/blob/main/core/tcp.go#L83
+
+			conn := gonet.NewUDPConn(&wq, ep)
+			defer conn.Close()
+
+			buf := make([]byte, mtu)
+			for {
+				n, _, err := conn.ReadFrom(buf)
+				if err == net.ErrClosed {
+					break
+				}
+				if err != nil {
+					log.Printf("error reading udp packet with conn.ReadFrom: %v, ignoring", err)
+					continue
+				}
+
+				verbosef("read a UDP packet with %d bytes, sending to mux...", n)
+
+				mux.notifyUDP(conn, &udpPacket{
+					conn.RemoteAddr(),
+					conn.LocalAddr(),
+					buf[:n],
+				})
+			}
+		})
+
 		s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
+		s.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
 
 		// create the network interface -- tun2socks says this must happen *after* registering the TCP forwarder
 		nic := s.NextNICID()

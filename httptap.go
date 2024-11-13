@@ -162,7 +162,6 @@ func Main() error {
 		Link               string   `default:"10.1.1.100/24" help:"IP address of the network interface that the subprocess will see"`
 		Route              string   `default:"0.0.0.0/0" help:"IP address range to route to the internet"`
 		Gateway            string   `default:"10.1.1.1" help:"IP address of the gateway that intercepts and proxies network packets"`
-		MAC                string   `default:"aa:00:01:01:01:01" help:"MAC address of the gateway as seen by the subprocess"`
 		WebUI              string   `help:"address and port to serve API on"`
 		User               string   `help:"run command as this user (username or id)"`
 		NoOverlay          bool     `arg:"--no-overlay" help:"do not mount any overlay filesystems"`
@@ -513,18 +512,10 @@ func Main() error {
 			return fmt.Errorf("error getting MTU: %w", err)
 		}
 
-		// get mac address for the tun device
-		// mac, err := net.ParseMAC(args.MAC)
-		// if err != nil {
-		// 	return fmt.Errorf("error parsing MAC address %q: %v", args.MAC, err)
-		// }
-
 		// create a link endpoint based on the TUN device
 		endpoint, err := fdbased.New(&fdbased.Options{
 			FDs: []int{int(tun.ReadWriteCloser.(*os.File).Fd())},
 			MTU: mtu,
-			//EthernetHeader: tun.IsTAP(),
-			//Address:        tcpip.LinkAddress(mac),
 		})
 		if err != nil {
 			return fmt.Errorf("error creating link from tun device file descriptor: %v", err)
@@ -554,8 +545,6 @@ func Main() error {
 
 			// create an adapter that makes an adapter into a net.Conn
 			mux.notifyTCP(gonet.NewTCPConn(&wq, ep))
-			//defer conn.Close()
-			//fmt.Fprint(conn, "hello gvisor")
 		})
 
 		udpForwarder := udp.NewForwarder(s, func(r *udp.ForwarderRequest) {

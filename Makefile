@@ -38,17 +38,20 @@ test-with-curl-pre-resolved-non-tls: clean
 test-with-wget: clean
 	go run . -- wget https://example.com
 
-test-with-udp: clean
-	go run . -- bash -c "echo 'hello udp' | socat udp4:1.2.3.4:33445 - > out"
+test-with-udp-11223: clean
+	go run . -- bash -c "echo 'hello udp' | socat udp4:1.2.3.4:11223 - "
 
-test-with-netcat-dns: clean
-	go run . -- bash -c "echo cfc9 0100 0001 0000 0000 0000 0a64 7563 6b64 7563 6b67 6f03 636f 6d00 0001 0001 | xxd -p -r | socat udp4:1.1.1.1:53 - | xxd > out"
+test-with-socat-dns: clean
+	go run . -- bash -c "echo cfc9 0100 0001 0000 0000 0000 0a64 7563 6b64 7563 6b67 6f03 636f 6d00 0001 0001 | xxd -p -r | socat udp4:1.1.1.1:53 - | xxd"
 
 test-with-dig: clean
-	go run . -- bash -c "dig -t a google.com > out"
+	go run . -- dig -t a google.com
 
-test-with-dig-explicit-nameserver: clean
-	go run . -- bash -c "dig -t a google.com @1.1.1.1 > out"
+test-with-dig-1111: clean
+	go run . -- dig -t a google.com @1.1.1.1
+
+test-with-nslookup: clean
+	go run . -- nslookup google.com
 
 test-with-oci: clean
 	go run . -- oci ce cluster generate-token --region us-ashburn-1 --cluster-id ocid1.cluster.oc1.iad.aaaaaaaauluvhw2v2emhebn4h724eedou76nhacixlczbj4emc52m44j4asq

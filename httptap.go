@@ -478,9 +478,20 @@ func Main() error {
 		handleDNS(context.Background(), w, p.payload)
 	})
 
+	// set up a test TCP interceptor
 	mux.HandleTCP(":11223", func(conn net.Conn) {
 		fmt.Fprint(conn, "hello 11223\n")
 		conn.Close()
+	})
+
+	// set up a test UDP interceptor
+	mux.HandleUDP(":11223", func(w udpResponder, p *udpPacket) {
+		log.Printf("got udp packet: %q, replying", string(p.payload))
+		_, err = w.Write([]byte("hello udp 11223!\n"))
+		if err != nil {
+			errorf("error writing udp packet back to sender: %v", err)
+			return
+		}
 	})
 
 	// TODO: proxy all other UDP packets to the public internet

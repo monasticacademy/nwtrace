@@ -486,8 +486,13 @@ func Main() error {
 	// TODO: proxy all other UDP packets to the public internet
 	// go proxyUDP(udppstack.Listen("*"))
 
-	// intercept all https connections on port 443
-	go proxyHTTPS(mux.ListenTCP(":443"), ca)
+	// intercept all TCP connections on port 443 and treat as HTTPS
+	mux.HandleTCP(":80", proxyHTTP)
+
+	// intercept all TCP connections on port 443 and treat as HTTPS
+	mux.HandleTCP(":443", func(conn net.Conn) {
+		proxyHTTPS(conn, ca)
+	})
 
 	// start listening for TCP connections and proxy each one to the world
 	go proxyTCP(mux.ListenTCP("*"))
@@ -521,7 +526,7 @@ func Main() error {
 			return fmt.Errorf("error creating link from tun device file descriptor: %v", err)
 		}
 
-		// create and register the TCP forwardedr
+		// create the TCP forwarder, which accepts gvisor connections and notifies the mux
 		const maxInFlight = 100 // maximum simultaneous connections
 		tcpForwarder := tcp.NewForwarder(s, 0, maxInFlight, func(r *tcp.ForwarderRequest) {
 			// remote address is the IP address of the subprocess
@@ -547,6 +552,7 @@ func Main() error {
 			mux.notifyTCP(gonet.NewTCPConn(&wq, ep))
 		})
 
+		// create the UDP forwarder, which accepts UDP packets and notifies the mux
 		udpForwarder := udp.NewForwarder(s, func(r *udp.ForwarderRequest) {
 			// remote address is the IP address of the subprocess
 			// local address is IP address that the subprocess was trying to reach
@@ -554,7 +560,7 @@ func Main() error {
 				r.ID().RemoteAddress, r.ID().RemotePort,
 				r.ID().LocalAddress, r.ID().LocalPort)
 
-			// send a SYN+ACK in response to the SYN
+			// create an endpoint for responding to this packet
 			var wq waiter.Queue
 			ep, err := r.CreateEndpoint(&wq)
 			if err != nil {
@@ -589,6 +595,7 @@ func Main() error {
 			}
 		})
 
+		// register the forwarders with the stack
 		s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 		s.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
 
@@ -599,19 +606,19 @@ func Main() error {
 			return fmt.Errorf("error creating NIC: %v", er)
 		}
 
-		// set promiscuous mode (from tun2socks: https://github.com/xjasonlyu/tun2socks/blob/main/core/nic.go#L43)
+		// set promiscuous mode so that the forwarder receives packets not addressed to us
 		er = s.SetPromiscuousMode(nic, true)
 		if er != nil {
 			return fmt.Errorf("error activating promiscuous mode: %v", er)
 		}
 
-		// set spoofing mode (from tun2socks: https://github.com/xjasonlyu/tun2socks/blob/main/core/nic.go#L56)
+		// set spoofing mode so that we can send packets from any address
 		er = s.SetSpoofing(nic, true)
 		if er != nil {
 			return fmt.Errorf("error activating spoofing mode: %v", er)
 		}
 
-		// set up the route table (without this we will not be able to send packets to the subprocess)
+		// set up the route table so that we can send packets to the subprocess
 		s.SetRouteTable([]tcpip.Route{
 			{
 				Destination: header.IPv4EmptySubnet,
@@ -627,7 +634,7 @@ func Main() error {
 		return fmt.Errorf("invalid stack %q; valid choices are 'gvisor' or 'homegrown'", args.Stack)
 	}
 
-	// wait for subprocess completion
+	// wait for the subprocess to complete
 	err = cmd.Wait()
 	if err != nil {
 		exitError, isExitError := err.(*exec.ExitError)

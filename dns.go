@@ -44,11 +44,13 @@ func handleDNS(ctx context.Context, w io.Writer, payload []byte) {
 	}
 
 	// always send the entire buffer in a single Write() since UDP writes one packet per call to Write()
+	verbosef("responding to DNS request with %d bytes...", len(buf))
 	_, err = w.Write(buf)
 	if err != nil {
 		errorf("error writing dns response: %v, abandoning...", err)
 		return
 	}
+	verbosef("done responding to DNS request (sent %d bytes)", len(buf))
 }
 
 // handleDNSQuery resolves IPv4 hostnames according to net.DefaultResolver
@@ -70,6 +72,8 @@ func handleDNSQuery(ctx context.Context, req *dns.Msg) ([]dns.RR, error) {
 			return nil, fmt.Errorf("the default resolver said: %w", err)
 		}
 
+		verbosef("resolved %v to %v with default resolver", question.Name, ips)
+
 		var rrs []dns.RR
 		for _, ip := range ips {
 			rrline := fmt.Sprintf("%s A %s", question.Name, ip)
@@ -82,7 +86,7 @@ func handleDNSQuery(ctx context.Context, req *dns.Msg) ([]dns.RR, error) {
 		return rrs, nil
 	}
 
-	verbose("proxying the request...")
+	verbose("proxying non-A request to upstream DNS server...")
 
 	// proxy the request to another server
 	request := new(dns.Msg)

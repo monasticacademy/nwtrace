@@ -1,28 +1,12 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"net"
 )
 
-// proxyTCP accepts connections on the given listener. For each one it dials the outside world
-// and proxies data back and forth. It blocks until the listener returns an error, which only
-// happens when the TCP stack shuts down.
-func proxyTCP(l net.Listener) error {
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			return fmt.Errorf("listener.Accept returned with error: %w", err)
-		}
-
-		// dial will take a while to complete; do not block on next accept
-		go proxyTCPConn(conn)
-	}
-}
-
-// proxyTCPConn proxies data received on one TCP connection to the world, and back the other way.
-func proxyTCPConn(subprocess net.Conn) {
+// proxyTCP proxies data received on one TCP connection to the world, and back the other way.
+func proxyTCP(subprocess net.Conn) {
 	// the connections's "LocalAddr" is actually the place the other side (the subprocess) was trying
 	// to reach, so that's the address we dial in order to proxy
 	world, err := net.Dial("tcp", subprocess.LocalAddr().String())

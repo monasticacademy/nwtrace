@@ -495,7 +495,9 @@ func Main() error {
 	})
 
 	// start listening for TCP connections and proxy each one to the world
-	go proxyTCP(mux.ListenTCP("*"))
+	mux.HandleTCP("*", func(conn net.Conn) {
+		proxyTCP(conn)
+	})
 
 	switch strings.ToLower(args.Stack) {
 	case "homegrown":
@@ -504,7 +506,6 @@ func Main() error {
 		udpstack := newUDPStack(&mux, toSubprocess)
 		go readFromDevice(ctx, tun, tcpstack, udpstack)
 	case "gvisor":
-
 		// create the stack with udp and tcp protocols
 		s := stack.New(stack.Options{
 			NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},

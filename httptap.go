@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -21,6 +22,7 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/joemiller/certin"
+	"github.com/mdlayher/packet"
 	"github.com/monasticacademy/httptap/pkg/certfile"
 	"github.com/monasticacademy/httptap/pkg/opensslpaths"
 	"github.com/monasticacademy/httptap/pkg/overlay"
@@ -166,6 +168,7 @@ func Main() error {
 		User               string   `help:"run command as this user (username or id)"`
 		NoOverlay          bool     `arg:"--no-overlay" help:"do not mount any overlay filesystems"`
 		Stack              string   `default:"gvisor" help:"'gvisor' or 'homegrown'"`
+		Dump               bool     `help:"dump all packets sent and received"`
 		Command            []string `arg:"positional"`
 	}
 	arg.MustParse(&args)
@@ -330,6 +333,46 @@ func Main() error {
 	})
 	if err != nil {
 		return fmt.Errorf("error creating default route: %w", err)
+	}
+
+	// if --dump was provided then start watching everything
+	if args.Dump {
+		iface, err := net.InterfaceByName(args.Tun)
+		if err != nil {
+			return err
+		}
+
+		// packet.Raw means listen for raw IP packets (requires root permissions)
+		// unix.ETH_P_ALL means listen for all packets
+		conn, err := packet.Listen(iface, packet.Raw, unix.ETH_P_ALL, nil)
+		if err != nil {
+			if errors.Is(err, unix.EPERM) {
+				return fmt.Errorf("you need root permissions to read raw packets (%w)", err)
+			}
+			return fmt.Errorf("error listening for raw packet: %w", err)
+		}
+
+		// set promiscuous mode so that we see everything
+		err = conn.SetPromiscuous(true)
+		if err != nil {
+			return fmt.Errorf("error setting raw packet connection to promiscuous mode: %w", err)
+		}
+
+		go func() {
+			// read packets forever
+			buf := make([]byte, iface.MTU)
+			for {
+				n, _, err := conn.ReadFrom(buf)
+				if err != nil {
+					log.Printf("error reading raw packet: %w, aborting dump", err)
+					return
+				}
+
+				// decode and dump
+				packet := gopacket.NewPacket(buf[:n], layers.LayerTypeIPv4, gopacket.NoCopy)
+				log.Println(packet.Dump())
+			}
+		}()
 	}
 
 	// if /etc/ is a directory then set up an overlay
@@ -564,6 +607,7 @@ func Main() error {
 			mux.notifyTCP(gonet.NewTCPConn(&wq, ep))
 		})
 
+		// TODO: this UDP forwarder only ever processes one UDP packet
 		// create the UDP forwarder, which accepts UDP packets and notifies the mux
 		udpForwarder := udp.NewForwarder(s, func(r *udp.ForwarderRequest) {
 			// remote address is the IP address of the subprocess

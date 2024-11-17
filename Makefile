@@ -20,7 +20,13 @@ test-with-netcat-http: clean
 	go run . -- bash -c "printf 'GET / HTTP/1.1\r\nHOST: example.com\r\nUser-Agent: nc\r\n\r\n' | nc 93.184.215.14 80 > out"
 
 test-with-curl: clean
-	go run . -v -- bash -c "curl -s https://example.com > out"
+	go run . -v -- bash -c "env G_MESSAGES_DEBUG=all curl -s https://example.com > out"
+
+test-with-curl-dump: clean
+	go run . -v --dump -- bash -c "curl -s https://example.com > out"
+
+test-with-curl-dump-homegrown: clean
+	go run . -v --dump --stack=homegrown -- bash -c "curl -s https://example.com > out"
 
 test-with-curl-non-tls: clean
 	go run . -v -- bash -c "curl -s http://example.com > out"
@@ -137,6 +143,14 @@ test-with-setcap:
 	go build -o /tmp/httptap
 	sudo setcap 'cap_net_admin=ep cap_sys_admin=ep cap_dac_override=ep' /tmp/httptap
 	/tmp/httptap --no-new-user-namespace -- curl -so out https://www.example.com
+
+test-with-udp-experiment:
+	go build -o /tmp/httptap
+	go build -o /tmp/udp-experiment ./udp-experiment
+	sudo /tmp/httptap -v /tmp/udp-experiment httptap 1.2.3.4:11223
+
+
+
 
 tcpdump-port-11223:
 	sudo tcpdump -i lo 'tcp port 11223'

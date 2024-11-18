@@ -1,13 +1,20 @@
-TODO: badges
+<h1 align="center">
+  <img src="./.github/banner.webp" alt="httptap" height="250px">
+  <br>
+  httptap
+  </br>
+</h1>
+<h4 align="center">Application HTTP request inspector</h4>
+<p align="center">
+  <a href="https://pkg.go.dev/github.com/monasticacademy/httptap"><img src="https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white&style=flat-square" alt="Documentation"></a>
+  <a href="https://github.com/monasticacademy/httptap/actions"><img src="https://github.com/monasticacademy/httptap/workflows/Test/badge.svg" alt="Build Status"></a>
+</p>
+<br>
 
-TODO: graphic
-
-# Httptap
-
-Inspect HTTP requests and responses made by linux applications
+View the HTTP and HTTPS requests made by a linux program:
 
 ```shell
-$ httptap curl https://monasticacademy.org
+$ httptap -- curl https://monasticacademy.org
 ---> GET https://monasticacademy.org/
 <--- 308 https://monasticacademy.org/ (15 bytes)
 ```
@@ -20,9 +27,11 @@ httptap -- python -c "import requests; requests.get('https://monasticacademy.org
 <--- 200 https://www.monasticacademy.org/ (5796 bytes)
 ```
 
-It works by running the requested subprocess in a network namespace, and intercepting all traffic, in the spirit of a transparent proxy, but on a per-application level. No daemon is needed or used, and no iptables rules are created or assumed. You do not need to be the root user, nor run `httptap` in any kind of priveleged mode.
+If you can run `<command>` on your shell, you can likely also run `httptap -- <command>` and view the HTTP requests made by the command, as well as their responses.
 
-The `httptap` application is a static Go binary that runs without dependencies. No modifications at all are made to the system, except within isolated, application-scoped namespaces. You need access to `/dev/net/tun`, which is the default on some linux systems, and can be given on others with
+It works by running the requested subprocess in a network namespace, and proxying all traffic. It creates a certificate authority on the fly in order to terminate TLS connections initiated by the subprocess. They are decrypted and then proxied to their intended destination.
+
+The `httptap` application is a static Go binary that runs without dependencies. No global modifications are made to the system; no daemon is needed or used; no iptables rules are created or assumed. You do not need to be the root user, nor run `httptap` in any kind of priveleged mode.
 
 ```shell
 sudo chmod a+rw /dev/net/tun

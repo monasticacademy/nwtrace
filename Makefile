@@ -5,12 +5,13 @@ build:
 clean: force
 	rm -rf out
 
+run: clean
+	go run . bash
+
 force:
 
 # Targets beginning with "test-" are run automatically in CI
 
-run-with-bash: clean
-	go run . bash
 
 webui-sleep-forever: clean
 	go run . --webui :5000 -- sleep infinity

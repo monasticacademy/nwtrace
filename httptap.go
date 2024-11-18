@@ -334,6 +334,18 @@ func Main() error {
 		return fmt.Errorf("error creating default route: %w", err)
 	}
 
+	// find the loopback device
+	loopback, err := netlink.LinkByName("lo")
+	if err != nil {
+		return fmt.Errorf("error finding link for loopback device %q: %w", args.Tun, err)
+	}
+
+	// bring the link up
+	err = netlink.LinkSetUp(loopback)
+	if err != nil {
+		return fmt.Errorf("error bringing up link for loopback device: %w", err)
+	}
+
 	// if --dump was provided then start watching everything
 	if args.Dump {
 		iface, err := net.InterfaceByName(args.Tun)

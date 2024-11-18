@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="./.github/banner.webp" alt="httptap" height="250px">
+  <img src="./.github/banner.webp" alt="httptap" height="450px">
   <br>
   httptap
   </br>
@@ -27,28 +27,30 @@ httptap -- python -c "import requests; requests.get('https://monasticacademy.org
 <--- 200 https://www.monasticacademy.org/ (5796 bytes)
 ```
 
-If you can run `<command>` on your shell, you can likely also run `httptap -- <command>` and view the HTTP requests made by the command, as well as their responses.
-
-It works by running the requested subprocess in a network namespace, and proxying all traffic. It creates a certificate authority on the fly in order to terminate TLS connections initiated by the subprocess. They are decrypted and then proxied to their intended destination.
-
-The `httptap` application is a static Go binary that runs without dependencies. No global modifications are made to the system; no daemon is needed or used; no iptables rules are created or assumed. You do not need to be the root user, nor run `httptap` in any kind of priveleged mode.
-
-```shell
-sudo chmod a+rw /dev/net/tun
-```
-
-In order to decrypt TLS traffic, the httptap binary creates a certificate authority on-the-fly and injects it into the environment seen by subprocess. Using this certificate it decrypts each HTTP request and relays it to its intended host. It does not process or decrypt any traffic from any other processes on the machine, and does not inject any certificate authorities into the broader system. The certificate is created automatically when the process starts, and is discarded with the process terminates.
-
-In order to get the subprocess to read the certificate authority created in this way, `httptap` sets several environment variables on the subprocess it runs.
-
-If you can run `<some command>` on your shell, then you should also be able to run `httptap <some command>`. There is no need to containerize or otherwise prepare any kind of isolated environment to run a command. Httptap runs `<some command>` in an isolated network namespace, but it does not use a container or any kind, so the process has access to the broader filesystem just as if it were run directly.
-
-Httptap make extensive use of linux-specific system calls. It is unlikely to be ported to other operating systems.
-
-# Installation
+If you can run `<command>` on your shell, you can likely also run `httptap -- <command>`. You do not need to run it as the root user, nor set up any kind of daemon. When you run httptap, it does not create iptables rules or make any other global changes to your system. The `httptap` executable is a static Go binary that runs without dependencies. You can install it like this:
 
 ```shell
 go install github.com/monasticacademy/httptap@latest
+```
+
+It works by running the requested subprocess in a network namespace containing a TUN device that it uses to intercept and proxy all network traffic. In order to inspect the contents of TLS connections, it creates a certificate authority and injects it into environment variables passed to the subprocess.
+
+Httptap make extensive use of linux-specific system calls. It is unlikely to be ported to other operating systems.
+
+# Install from releases
+
+```shell
+curl -L https://github.com/monasticacademy/httptap/releases/download/v0.0.3/httptap_Linux_x86_64.tar.gz | tar xzf -
+./httptap -- curl https://www.example.com
+```
+
+For all versions and CPU architectures see the [releases page](https://github.com/monasticacademy/httptap/releases/).
+
+# Install with Go
+
+```shell
+go install github.com/monasticacademy/httptap@latest
+./httptap -- curl https://www.example.com
 ```
 
 # How it works

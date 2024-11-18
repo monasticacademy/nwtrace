@@ -52,7 +52,7 @@ test-with-udp-11223: clean
 	go run . -- bash -c "echo 'hello udp' | socat udp4:1.2.3.4:11223 - "
 
 test-with-two-udp-packets: clean
-	go run . -- bash -c "echo 'hello udp' | socat -t 2 udp4:1.2.3.4:11223 - ; echo 'hello again udp' | socat -t 2 udp4:1.2.3.4:11223 - "
+	go run . -- bash -c "echo 'hello udp' | socat udp4:1.2.3.4:11223 - ; echo 'hello again udp' | socat udp4:1.2.3.4:11223 - "
 
 test-with-socat-dns: clean
 	go run . -- bash -c "echo cfc9 0100 0001 0000 0000 0000 0a64 7563 6b64 7563 6b67 6f03 636f 6d00 0001 0001 | xxd -p -r | socat udp4:1.1.1.1:53 - | xxd"

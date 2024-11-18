@@ -98,7 +98,7 @@ test-with-docker: clean
 		--rm \
 		--volume .:/src \
 		--workdir /src \
-		--cap-add CAP_SYS_ADMIN \
+		--cap-add SYS_ADMIN \
 		--device /dev/net/tun:/dev/net/tun \
 		ubuntu \
 		.build/httptap --no-overlay -- curl -so out https://www.example.com
@@ -112,7 +112,7 @@ test-with-docker-alpine: clean
 		--rm \
 		--volume .:/src \
 		--workdir /src \
-		--cap-add CAP_SYS_ADMIN \
+		--cap-add SYS_ADMIN \
 		--device /dev/net/tun:/dev/net/tun \
 		alpine/curl \
 		.build/httptap --no-overlay -- curl -so out https://www.example.com
@@ -127,7 +127,7 @@ test-with-docker-distroless: clean
 		--rm \
 		--volume .:/src \
 		--workdir /src \
-		--cap-add CAP_SYS_ADMIN \
+		--cap-add SYS_ADMIN \
 		--device /dev/net/tun:/dev/net/tun \
 		gcr.io/distroless/static-debian12 \
 		.build/httptap --no-overlay -- .build/hi

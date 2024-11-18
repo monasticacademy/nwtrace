@@ -222,7 +222,7 @@ func Main() error {
 			os.Exit(exiterr.ExitCode())
 		}
 		if err != nil {
-			return fmt.Errorf("error re-exec'ing ourselves in a new user namespace: %w", err)
+			return fmt.Errorf("error re-executing ourselves in a new user namespace: %w", err)
 		}
 		return nil
 	}

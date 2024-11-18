@@ -9,6 +9,9 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
+      - name: Apt
+        run: apt install -y socat openjdk-21-jdk-headless openjdk-21-jre-headless
+
       - name: Checkout
         uses: actions/checkout@v4
 

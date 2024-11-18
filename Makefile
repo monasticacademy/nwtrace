@@ -7,11 +7,21 @@ clean: force
 
 force:
 
-test-with-bash: clean
+# Targets beginning with "test-" are run automatically in CI
+
+run-with-bash: clean
 	go run . bash
 
-test-with-nonroot-user: clean
-	go run . --user $(USER) -- bash -norc
+webui-sleep-forever: clean
+	go run . --webui :5000 -- sleep infinity
+
+webui-curl-loop: clean
+	go run . --webui :5000 -- bash -c "while true; do echo "curling..."; curl -s https://www.example.com > out; sleep 1; done"
+
+tcpdump-port-11223:
+	sudo tcpdump -i lo 'tcp port 11223'
+
+# Test cases
 
 test-with-hello: clean
 	go run . -- go run ./hello
@@ -21,12 +31,6 @@ test-with-netcat-http: clean
 
 test-with-curl: clean
 	go run . -- bash -c "env curl -s https://example.com > out"
-
-test-with-curl-dump: clean
-	go run . --dump -- bash -c "curl -s https://example.com > out"
-
-test-with-curl-dump-homegrown: clean
-	go run . --dump --stack=homegrown -- bash -c "curl -s https://example.com > out"
 
 test-with-curl-non-tls: clean
 	go run . -- bash -c "curl -s http://example.com > out"
@@ -65,12 +69,6 @@ test-with-nslookup: clean
 test-with-oci: clean
 	go run . -- oci ce cluster generate-token --region us-ashburn-1 --cluster-id ocid1.cluster.oc1.iad.aaaaaaaauluvhw2v2emhebn4h724eedou76nhacixlczbj4emc52m44j4asq
 
-test-with-webui-sleep-forever: clean
-	go run . --webui :5000 -- sleep infinity
-
-test-with-webui-curl-loop: clean
-	go run . --webui :5000 -- bash -c "while true; do echo "curling..."; curl -s https://www.example.com > out; sleep 1; done"
-
 test-with-netcat-11223: clean
 	go run . -- bash -c "netcat example.com 11223 < /dev/null"
 
@@ -78,7 +76,8 @@ test-with-gcloud: clean
 	go run . -- gcloud compute instances list
 
 test-with-java: clean
-	go run . -- java Example
+	javac java-experiment/Example.java
+	go run . -- java -cp java-experiment Example
 
 test-with-doh: clean
 	go run . -- curl --doh-url https://cloudflare-dns.com/dns-query https://www.example.com
@@ -89,7 +88,14 @@ test-with-js: clean
 test-with-self: clean
 	go run . go run . curl https://www.example.com
 
-test-with-docker: clean
+# These tests are currently broken
+
+broken-test-with-nonroot-user: clean
+	go run . --user $(USER) -- bash -norc
+
+# docker-based tests
+
+docker-test: clean
 	mkdir -p .build
 	go build -o .build/httptap
 	docker run \
@@ -103,7 +109,7 @@ test-with-docker: clean
 		ubuntu \
 		.build/httptap --no-overlay -- curl -so out https://www.example.com
 
-test-with-docker-alpine: clean
+docker-test-with-alpine: clean
 	mkdir -p .build
 	CGO_ENABLED=0 go build -o .build/httptap
 	docker run \
@@ -117,7 +123,7 @@ test-with-docker-alpine: clean
 		alpine/curl \
 		.build/httptap --no-overlay -- curl -so out https://www.example.com
 
-test-with-docker-distroless: clean
+docker-test-with-distroless: clean
 	mkdir -p .build
 	CGO_ENABLED=0 go build -o .build/httptap
 	CGO_ENABLED=0 go build -o .build/hi ./hello
@@ -132,25 +138,24 @@ test-with-docker-distroless: clean
 		gcr.io/distroless/static-debian12 \
 		.build/httptap --no-overlay -- .build/hi
 
-# Test with running httptap in priveleged mode, and turning off creation of user namespace
+# tests that require sudo
 
-test-with-sudo: clean
+sudo-test: clean
 	go build -o /tmp/httptap .
 	sudo /tmp/httptap bash
 
-test-with-no-new-user-namespace: clean
+sudo-test-with-no-new-user-namespace: clean
 	go build -o /tmp/httptap .
 	sudo /tmp/httptap --no-new-user-namespace -- curl -so out https://www.example.com
 
-test-with-setcap:
-	go build -o /tmp/httptap
-	sudo setcap 'cap_net_admin=ep cap_sys_admin=ep cap_dac_override=ep' /tmp/httptap
-	/tmp/httptap --no-new-user-namespace -- curl -so out https://www.example.com
-
-test-with-udp-experiment:
+sudo-test-with-udp-experiment:
 	go build -o /tmp/httptap
 	go build -o /tmp/udp-experiment ./udp-experiment
 	sudo /tmp/httptap /tmp/udp-experiment httptap 1.2.3.4:11223
 
-tcpdump-port-11223:
-	sudo tcpdump -i lo 'tcp port 11223'
+# tests that require setcap
+
+setcap-test-with-setcap:
+	go build -o /tmp/httptap
+	sudo setcap 'cap_net_admin=ep cap_sys_admin=ep cap_dac_override=ep' /tmp/httptap
+	/tmp/httptap --no-new-user-namespace -- curl -so out https://www.example.com

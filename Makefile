@@ -25,7 +25,7 @@ tcpdump-port-11223:
 # Test cases
 
 test-with-hello: clean
-	go run . -- go run ./hello
+	go run . -- go run ./experiments/hello
 
 test-with-netcat-http: clean
 	go run . -- bash -c "printf 'GET / HTTP/1.1\r\nHOST: example.com\r\nUser-Agent: nc\r\n\r\n' | nc 93.184.215.14 80 > out"
@@ -129,7 +129,7 @@ docker-test-with-alpine: clean
 docker-test-with-distroless: clean
 	mkdir -p .build
 	CGO_ENABLED=0 go build -o .build/httptap
-	CGO_ENABLED=0 go build -o .build/hi ./hello
+	CGO_ENABLED=0 go build -o .build/hi ./experiments/hello
 	docker run \
 		--interactive \
 		--tty \

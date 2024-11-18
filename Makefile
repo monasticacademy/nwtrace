@@ -70,14 +70,14 @@ test-with-netcat-11223: clean
 	go run . -- bash -c "netcat example.com 11223 < /dev/null"
 
 test-with-java: clean
-	javac java-experiment/Example.java
-	go run . -- java -cp java-experiment Example
+	javac experiments/java/Example.java
+	go run . -- java -cp experiments/java Example
 
 test-with-doh: clean
 	go run . -- curl --doh-url https://cloudflare-dns.com/dns-query https://www.example.com
 
 test-with-js: clean
-	go run . node js-experiment/get.js
+	go run . node experiments/js/get.js
 
 test-with-self: clean
 	go run . go run . curl https://www.example.com
@@ -152,7 +152,7 @@ sudo-test-with-no-new-user-namespace: clean
 
 sudo-test-with-udp-experiment:
 	go build -o /tmp/httptap
-	go build -o /tmp/udp-experiment ./udp-experiment
+	go build -o /tmp/udp-experiment ./experiments/udp
 	sudo /tmp/httptap /tmp/udp-experiment httptap 1.2.3.4:11223
 
 # tests that require setcap

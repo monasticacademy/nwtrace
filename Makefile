@@ -66,14 +66,8 @@ test-with-dig-1111: clean
 test-with-nslookup: clean
 	go run . -- nslookup google.com
 
-test-with-oci: clean
-	go run . -- oci ce cluster generate-token --region us-ashburn-1 --cluster-id ocid1.cluster.oc1.iad.aaaaaaaauluvhw2v2emhebn4h724eedou76nhacixlczbj4emc52m44j4asq
-
 test-with-netcat-11223: clean
 	go run . -- bash -c "netcat example.com 11223 < /dev/null"
-
-test-with-gcloud: clean
-	go run . -- gcloud compute instances list
 
 test-with-java: clean
 	javac java-experiment/Example.java
@@ -92,6 +86,14 @@ test-with-self: clean
 
 broken-test-with-nonroot-user: clean
 	go run . --user $(USER) -- bash -norc
+
+# these tests require things that I do not want to install into github actions
+
+local-test-with-oci: clean
+	go run . -- oci ce cluster generate-token --region us-ashburn-1 --cluster-id ocid1.cluster.oc1.iad.aaaaaaaauluvhw2v2emhebn4h724eedou76nhacixlczbj4emc52m44j4asq
+
+local-test-with-gcloud: clean
+	go run . -- gcloud compute instances list
 
 # docker-based tests
 

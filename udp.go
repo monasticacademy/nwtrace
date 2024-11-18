@@ -16,18 +16,6 @@ type udpPacket struct {
 	payload []byte
 }
 
-// udpHandlerFunc is a function that receives UDP packets. Each call to response.Write
-// will write a UDP packet back to the subprocess that looks as if it comes from
-// the destination to which the original packet was sent. No matter what you put in
-// the source or destination address, the
-type udpHandlerFunc func(w udpResponder, packet *udpPacket)
-
-// udpMuxEntry is a pattern and corresponding handler, for use in the mux table for the udp stack
-type udpMuxEntry struct {
-	handler udpHandlerFunc
-	pattern string
-}
-
 // udpStack parses UDP packets with gopacket and dispatches them through a mux
 type udpStack struct {
 	toSubprocess chan []byte // data sent to this channel goes to subprocess as raw IPv4 packet
@@ -68,7 +56,6 @@ func (s *udpStack) handlePacket(ipv4 *layers.IPv4, udp *layers.UDP, payload []by
 
 	src := net.UDPAddr{IP: ipv4.SrcIP, Port: int(udp.SrcPort)}
 	dst := net.UDPAddr{IP: ipv4.DstIP, Port: int(udp.DstPort)}
-
 	s.app.notifyUDP(&w, &udpPacket{&src, &dst, payload})
 }
 

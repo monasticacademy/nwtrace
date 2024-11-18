@@ -24,6 +24,21 @@ type mux struct {
 	udpHandlers []*udpMuxEntry
 }
 
+// tcpHandlerFunc is a function that receives TCP connections
+type tcpHandlerFunc func(conn net.Conn)
+
+// udpHandlerFunc is a function that receives UDP packets. Each call to w.Write
+// will send a UDP packet back to the subprocess that looks as if it comes from
+// the destination to which the original packet was sent. No matter what you put in
+// the source or destination address, the
+type udpHandlerFunc func(w udpResponder, packet *udpPacket)
+
+// udpMuxEntry is a pattern and corresponding handler, for use in the mux table for the udp stack
+type udpMuxEntry struct {
+	handler udpHandlerFunc
+	pattern string
+}
+
 // ListenTCP returns a net.Listener that intercepts connections according to a filter pattern.
 //
 // Pattern can a hostname, a :port, a hostname:port, or "*" for everything". For example:
@@ -66,8 +81,6 @@ func (s *mux) HandleTCP(pattern string, handler tcpHandlerFunc) {
 	}()
 }
 
-type tcpHandlerFunc func(conn net.Conn)
-
 // HandleUDP registers a handler for UDP packets according to destination IP and/or por
 //
 // Pattern can a hostname, a port, a hostname:port, or "*" for everything". Ports are prepended
@@ -109,7 +122,7 @@ func (s *mux) notifyUDP(w udpResponder, packet *udpPacket) {
 
 	for _, entry := range s.udpHandlers {
 		if patternMatches(entry.pattern, packet.dst) {
-			entry.handler(w, packet)
+			go entry.handler(w, packet)
 			return
 		}
 	}
@@ -121,4 +134,34 @@ func (s *mux) notifyUDP(w udpResponder, packet *udpPacket) {
 type udpResponder interface {
 	// write a UDP packet back to the subprocess
 	Write(payload []byte) (n int, err error)
+}
+
+// tcpListener implements net.Listener for connections dispatched by a mux
+type tcpListener struct {
+	pattern     string
+	connections chan net.Conn // the tcpStack sends streams here when they are created and they match the pattern above
+}
+
+// Accept accepts an intercepted connection. Later this will implement net.Listener.Accept
+func (l *tcpListener) Accept() (net.Conn, error) {
+	stream := <-l.connections
+	if stream == nil {
+		// this means the channel is closed, which means the tcpStack was shut down
+		return nil, net.ErrClosed
+	}
+	return stream, nil
+}
+
+// for net.Listener interface
+func (l *tcpListener) Close() error {
+	// TODO: unregister from the stack, then close(l.connections)
+	verbose("tcpListener.Close() not implemented, ignoring")
+	return nil
+}
+
+// for net.Listener interface, returns our side of the connection
+func (l *tcpListener) Addr() net.Addr {
+	verbose("tcpListener.Addr() was called, returning bogus address 0.0.0.0:0")
+	// in truth we do not have a real address -- we listen for anything going anywhere
+	return &net.TCPAddr{IP: net.IPv4(0, 0, 0, 0), Port: 0}
 }

@@ -157,18 +157,17 @@ func errorf(fmt string, parts ...interface{}) {
 func Main() error {
 	ctx := context.Background()
 	var args struct {
-		Verbose            bool     `arg:"-v,--verbose"`
-		NoNewUserNamespace bool     `arg:"--no-new-user-namespace" help:"do not create a new user namespace (must be run as root)"`
-		Stderr             bool     `help:"log to stderr (default is stdout)"`
+		Verbose            bool     `arg:"-v,--verbose,env:HTTPTAP_VERBOSE"`
+		NoNewUserNamespace bool     `arg:"--no-new-user-namespace,env:HTTPTAP_NO_NEW_USER_NAMESPACE" help:"do not create a new user namespace (must be run as root)"`
+		Stderr             bool     `arg:"env:HTTPTAP_LOG_TO_STDERR" help:"log to stderr (default is stdout)"`
 		Tun                string   `default:"httptap" help:"name of the network device to create"`
-		Link               string   `default:"10.1.1.100/24" help:"IP address of the network interface that the subprocess will see"`
-		Route              string   `default:"0.0.0.0/0" help:"IP address range to route to the internet"`
+		Subnet             string   `default:"10.1.1.100/24" help:"IP address of the network interface that the subprocess will see"`
 		Gateway            string   `default:"10.1.1.1" help:"IP address of the gateway that intercepts and proxies network packets"`
-		WebUI              string   `help:"address and port to serve API on"`
+		WebUI              string   `arg:"env:HTTPTAP_WEB_UI" help:"address and port to serve API on"`
 		User               string   `help:"run command as this user (username or id)"`
-		NoOverlay          bool     `arg:"--no-overlay" help:"do not mount any overlay filesystems"`
-		Stack              string   `default:"gvisor" help:"'gvisor' or 'homegrown'"`
-		Dump               bool     `help:"dump all packets sent and received"`
+		NoOverlay          bool     `arg:"--no-overlay,env:HTTPTAP_NO_OVERLAY" help:"do not mount any overlay filesystems"`
+		Stack              string   `arg:"env:HTTPTAP_STACK" default:"gvisor" help:"'gvisor' or 'homegrown'"`
+		Dump               bool     `arg:"env:HTTPTAP_DUMP" help:"dump all packets sent and received"`
 		Command            []string `arg:"positional"`
 	}
 	arg.MustParse(&args)
@@ -301,7 +300,7 @@ func Main() error {
 	}
 
 	// parse the subnet that we will assign to the interface within the namespace
-	linksubnet, err := netlink.ParseIPNet(args.Link)
+	linksubnet, err := netlink.ParseIPNet(args.Subnet)
 	if err != nil {
 		return fmt.Errorf("error parsing subnet: %w", err)
 	}
@@ -315,7 +314,7 @@ func Main() error {
 	}
 
 	// parse the subnet that we will route to the tunnel
-	routesubnet, err := netlink.ParseIPNet(args.Route)
+	catchall, err := netlink.ParseIPNet("0.0.0.0/0")
 	if err != nil {
 		return fmt.Errorf("error parsing global subnet: %w", err)
 	}
@@ -328,7 +327,7 @@ func Main() error {
 
 	// add a route that sends all traffic going anywhere to our local address
 	err = netlink.RouteAdd(&netlink.Route{
-		Dst: routesubnet,
+		Dst: catchall,
 		Gw:  gateway,
 	})
 	if err != nil {
@@ -529,7 +528,7 @@ func Main() error {
 
 	// set up a test UDP interceptor
 	mux.HandleUDP(":11223", func(w udpResponder, p *udpPacket) {
-		log.Printf("got udp packet: %q, replying", string(p.payload))
+		verbosef("got udp packet: %q, replying", string(p.payload))
 		_, err = w.Write([]byte("hello udp 11223!\n"))
 		if err != nil {
 			errorf("error writing udp packet back to sender: %v", err)
@@ -607,7 +606,7 @@ func Main() error {
 			mux.notifyTCP(gonet.NewTCPConn(&wq, ep))
 		})
 
-		// TODO: this UDP forwarder only ever processes one UDP packet
+		// TODO: this UDP forwarder sometimes only ever processes one UDP packet, other times it keeps going... :/
 		// create the UDP forwarder, which accepts UDP packets and notifies the mux
 		udpForwarder := udp.NewForwarder(s, func(r *udp.ForwarderRequest) {
 			// remote address is the IP address of the subprocess
@@ -620,35 +619,44 @@ func Main() error {
 			var wq waiter.Queue
 			ep, err := r.CreateEndpoint(&wq)
 			if err != nil {
-				log.Printf("error accepting connection: %v", err)
+				verbosef("error accepting connection: %v", err)
 				return
 			}
 
 			// TODO: set keepalive count, keepalive interval, receive buffer size, send buffer size, like this:
 			//   https://github.com/xjasonlyu/tun2socks/blob/main/core/tcp.go#L83
 
+			// create a convenience adapter so that we can read and write using a net.Conn
 			conn := gonet.NewUDPConn(&wq, ep)
-			defer conn.Close()
 
-			buf := make([]byte, mtu)
-			for {
-				n, _, err := conn.ReadFrom(buf)
-				if err == net.ErrClosed {
-					break
+			// so far as I can tell, we must read packets in a new goroutine or else packets on other connections
+			// will never be processed
+			go func() {
+				defer conn.Close()
+
+				buf := make([]byte, mtu)
+				for {
+					n, _, err := conn.ReadFrom(buf)
+					if err == net.ErrClosed {
+						verbosef("UDP connection closed, exiting the read loop", n)
+						break
+					}
+					if err != nil {
+						verbosef("error reading udp packet with conn.ReadFrom: %v, ignoring", err)
+						continue
+					}
+
+					verbosef("read a UDP packet with %d bytes", n)
+
+					mux.notifyUDP(conn, &udpPacket{
+						conn.RemoteAddr(),
+						conn.LocalAddr(),
+						buf[:n],
+					})
+
+					verbose("mux returned, reading next packet...")
 				}
-				if err != nil {
-					log.Printf("error reading udp packet with conn.ReadFrom: %v, ignoring", err)
-					continue
-				}
-
-				verbosef("read a UDP packet with %d bytes, sending to mux...", n)
-
-				mux.notifyUDP(conn, &udpPacket{
-					conn.RemoteAddr(),
-					conn.LocalAddr(),
-					buf[:n],
-				})
-			}
+			}()
 		})
 
 		// register the forwarders with the stack

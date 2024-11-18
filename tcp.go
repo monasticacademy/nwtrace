@@ -41,36 +41,6 @@ func (s TCPState) String() string {
 	}
 }
 
-// tcpListener is the interface for the application to intercept TCP connections
-type tcpListener struct {
-	pattern     string
-	connections chan net.Conn // the tcpStack sends streams here when they are created and they match the pattern above
-}
-
-// Accept accepts an intercepted connection. Later this will implement net.Listener.Accept
-func (l *tcpListener) Accept() (net.Conn, error) {
-	stream := <-l.connections
-	if stream == nil {
-		// this means the channel is closed, which means the tcpStack was shut down
-		return nil, net.ErrClosed
-	}
-	return stream, nil
-}
-
-// for net.Listener interface
-func (l *tcpListener) Close() error {
-	// TODO: unregister from the stack, then close(l.connections)
-	verbose("tcpListener.Close() not implemented, ignoring")
-	return nil
-}
-
-// for net.Listener interface, returns our side of the connection
-func (l *tcpListener) Addr() net.Addr {
-	verbose("tcpListener.Addr() was called, returning bogus address 0.0.0.0:0")
-	// in truth we do not have a real address -- we listen for anything going anywhere
-	return &net.TCPAddr{IP: net.IPv4(0, 0, 0, 0), Port: 0}
-}
-
 // TCP stream
 
 type tcpStream struct {

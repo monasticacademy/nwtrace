@@ -40,9 +40,9 @@ test-with-curl-pre-resolved: clean
 test-with-curl-pre-resolved-non-tls: clean
 	go run . -- bash -c "curl -s --resolve example.com:80:93.184.215.14 http://example.com > out"
 
-# currently not working
+# works with gvisor stack but not homegrown stack
 test-with-wget: clean
-	go run . -- wget https://example.com
+	go run . -- wget https://example.com -O out
 
 test-with-udp-11223: clean
 	go run . -- bash -c "echo 'hello udp' | socat udp4:1.2.3.4:11223 - "

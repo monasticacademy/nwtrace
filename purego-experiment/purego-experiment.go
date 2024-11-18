@@ -15,7 +15,7 @@ const (
 func Main() error {
 	libcrypto, err := purego.Dlopen("libcrypto.so", purego.RTLD_NOW|purego.RTLD_GLOBAL)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	var X509_get_default_cert_dir_env func() string

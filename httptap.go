@@ -634,8 +634,10 @@ func Main() error {
 			go func() {
 				defer conn.Close()
 
-				buf := make([]byte, mtu)
 				for {
+					// allocate new buffer on each iteration for now because different handlers for each packet
+					// are started asynchronously
+					buf := make([]byte, mtu)
 					n, _, err := conn.ReadFrom(buf)
 					if err == net.ErrClosed {
 						verbosef("UDP connection closed, exiting the read loop", n)

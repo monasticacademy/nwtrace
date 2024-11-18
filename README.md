@@ -27,7 +27,7 @@ httptap -- python -c "import requests; requests.get('https://monasticacademy.org
 <--- 200 https://www.monasticacademy.org/ (5796 bytes)
 ```
 
-If you can run `<command>` on your shell, you can likely also run `httptap -- <command>`. You do not need to run it as the root user, nor set up any kind of daemon. When you run httptap, it does not create iptables rules or make any other global changes to your system. The `httptap` executable is a static Go binary that runs without dependencies. You can install it like this:
+If you can run `<command>` on your shell, you can likely also run `httptap -- <command>`. You do not need to be the root user. When you run httptap, it does not create iptables rules or make any other global changes to your system. The `httptap` executable is a static Go binary that runs without dependencies. You can install it with:
 
 ```shell
 go install github.com/monasticacademy/httptap@latest
@@ -66,3 +66,8 @@ Suppose the subprocess makes an HTTP request to www.example.com. The first thing
 When a client makes an HTTPS request, it asks the server for evidence that it is who it says it is. If the server has a certificate signed by a certificate authority, it can use that certificate to prove that it is who it says it is. The client will only accept such a certificate if it trusts the certificate authority that signed the certificate. Operating systems, web browsers, and many other pieces of software come with a list of a few hundred certificate authorities that they trust. Many of these pieces of software have ways for users to add additional certificate authorities to this list. We make use of this.
 
 When httptap starts, it creates a certificate authority (actually a private key plus a corresponding x509 certificate), writes it to a file on the filesystem visible only to the subprocess, and sets a few environment variables -- again only visible to the subprocess being run -- that add this certificate authority to the list of trusted certificate authorities. Since the subprocess trusts this certificate authority, and httptap holds the private key for the certificate authority, it can prove to the subprocess that it is the server which which the subprocess was trying to communicate. In this way we can read the plaintext HTTP requests.
+
+# Caveats
+
+- The process cannot listen for incoming network connections
+- You need access to `/dev/net/tun`

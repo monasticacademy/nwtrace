@@ -36,23 +36,36 @@ var libcrypto = sync.OnceValue[*libcryptoFuncs](func() *libcryptoFuncs {
 // Get the default certificate dir configured for openssl, or empty string if openssl is not installed or cannot be loaded
 func DefaultCertFile() string {
 	defer recover()
-	return libcrypto().X509_get_default_cert_file()
+	if lib := libcrypto(); lib != nil {
+		return lib.X509_get_default_cert_file()
+	}
+	return ""
 }
 
 // Get the name of the environment variable that controls the default certificate dir, or empty string if openssl is not installed or cannot be loaded
 func DefaultCertFileEnv() string {
 	defer recover()
-	return libcrypto().X509_get_default_cert_file_env()
+	if lib := libcrypto(); lib != nil {
+		return lib.X509_get_default_cert_file_env()
+	}
+	return ""
+
 }
 
 // Get the default certificate dir configured for openssl, or empty string if openssl is not installed or cannot be loaded
 func DefaultCertDir() string {
 	defer recover()
-	return libcrypto().X509_get_default_cert_dir()
+	if lib := libcrypto(); lib != nil {
+		return lib.X509_get_default_cert_dir()
+	}
+	return ""
 }
 
 // Get the name of the environment variable that controls the default certificate dir, or empty string if openssl is not installed or cannot be loaded
 func DefaultCertDirEnv() string {
 	defer recover()
-	return libcrypto().X509_get_default_cert_dir_env()
+	if lib := libcrypto(); lib != nil {
+		return lib.X509_get_default_cert_dir_env()
+	}
+	return ""
 }

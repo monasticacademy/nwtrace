@@ -100,7 +100,7 @@ test-with-docker: clean
 		--workdir /src \
 		--cap-add CAP_SYS_ADMIN \
 		--device /dev/net/tun:/dev/net/tun \
-		golang \
+		ubuntu \
 		.build/httptap --no-overlay -- curl -so out https://www.example.com
 
 test-with-docker-alpine: clean

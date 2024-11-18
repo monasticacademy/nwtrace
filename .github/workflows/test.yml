@@ -18,5 +18,4 @@ jobs:
           go-version: stable
 
       - name: Run
-        run: go run . -v -- curl https://www.example.com
-
+        run: scripts/test.sh
